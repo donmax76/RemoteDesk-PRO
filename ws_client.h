@@ -96,7 +96,7 @@ public:
     }
 
 private:
-    static const size_t kMaxNormalQueue = 2;
+    static const size_t kMaxNormalQueue = 4;
 
     struct Outgoing {
         WsOpcode opcode;

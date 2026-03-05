@@ -944,7 +944,7 @@ body {
     <button class="topbar-btn" id="btn-connect">CONNECT</button>
     <button class="topbar-btn danger hidden" id="btn-disconnect">DISCONNECT</button>
     <button class="topbar-btn" id="btn-stream-toggle">▶ STREAM</button>
-    <button class="topbar-btn" id="btn-record" title="Record">⏺ REC</button>
+    <button class="topbar-btn" id="btn-record" title="Record">⏺ REC <span id="rec-duration"></span></button>
     <button class="topbar-btn" id="btn-fullscreen">⛶</button>
   </div>
 </div>
@@ -961,6 +961,7 @@ body {
     <button class="nav-btn" data-panel="services" title="Services">🔧</button>
     <button class="nav-btn" data-panel="config" title="Config Editor">📝</button>
     <button class="nav-btn" data-panel="terminal" title="Terminal">$_</button>
+    <button class="nav-btn" data-panel="settings" title="Settings">🔩</button>
   </div>
 
   <!-- Main Content -->
@@ -982,6 +983,20 @@ body {
             <div class="dash-card-value" id="d-ram-pct">—</div>
             <div class="dash-card-sub" id="d-ram-info">— MB used</div>
             <div class="gauge-bar"><div class="gauge-fill" id="d-ram-bar" style="width:0%"></div></div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-icon">🔲</div>
+            <div class="dash-card-title">CPU</div>
+            <div class="dash-card-value" id="d-cpu-pct">—</div>
+            <div class="dash-card-sub">Processor load</div>
+            <div class="gauge-bar"><div class="gauge-fill" id="d-cpu-bar" style="width:0%"></div></div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-icon">🖼</div>
+            <div class="dash-card-title">GPU</div>
+            <div class="dash-card-value" id="d-gpu-pct">—</div>
+            <div class="dash-card-sub">Graphics load</div>
+            <div class="gauge-bar"><div class="gauge-fill" id="d-gpu-bar" style="width:0%"></div></div>
           </div>
           <div class="dash-card">
             <div class="dash-card-icon">⏱</div>
@@ -1062,6 +1077,11 @@ body {
         <button title="Screenshot" onclick="takeScreenshot()">📷</button>
         <button title="Record" id="btn-rec-overlay" onclick="toggleRecording()">⏺</button>
         <button title="Fullscreen" onclick="requestFullscreen()">⛶</button>
+      </div>
+      <div class="rec-settings" style="margin-top:8px;padding:8px;background:var(--bg2);border-radius:6px;font-size:12px;">
+        <span class="text-muted" style="font-size:11px;">Recording: WebM/MP4. When you stop — Chrome/Edge: “Save as” dialog (you choose folder); other browsers: file goes to Downloads.</span>
+        <div id="rec-last-path" style="margin-top:8px;padding:6px 8px;background:var(--panel);border-radius:4px;color:var(--accent);font-size:12px;word-break:break-all;min-height:20px;"></div>
+        <div id="rec-where-hint" style="margin-top:4px;font-size:11px;color:var(--muted);display:none;"></div>
       </div>
     </div>
 
@@ -1220,6 +1240,33 @@ body {
       </div>
     </div>
 
+    <!-- ── SETTINGS ── -->
+    <div id="panel-settings" class="panel" style="flex-direction:column;">
+      <div class="panel-header">
+        <span class="panel-title">Settings</span>
+      </div>
+      <div style="flex:1; overflow-y:auto; padding:16px;">
+        <div class="settings-block" style="margin-bottom:20px;">
+          <div class="panel-title" style="font-size:12px; margin-bottom:8px; color:var(--muted);">Save paths — choose folder (Chrome/Edge need HTTPS or localhost)</div>
+          <div id="settings-secure-warn" style="display:none; padding:8px; background:rgba(255,71,87,0.15); border-radius:6px; font-size:12px; margin-bottom:10px; color:var(--danger);">
+            Folder picker works only on <b>HTTPS</b> or <b>localhost</b>. Open this page as https://your-server/ or use Port 8080 with a tunnel.
+          </div>
+          <div class="form-row" style="align-items:center; margin-bottom:10px;">
+            <label class="form-label" style="min-width:200px;">Folder for file/folder downloads</label>
+            <button type="button" class="fm-btn" id="btn-download-folder" onclick="pickDownloadFolder()">Choose folder</button>
+            <button type="button" class="fm-btn" id="btn-download-folder-clear" onclick="clearDownloadFolder()">Clear</button>
+            <span id="settings-download-path" style="font-size:12px; color:var(--muted); margin-left:8px;">Not set</span>
+          </div>
+          <div class="form-row" style="align-items:center;">
+            <label class="form-label" style="min-width:200px;">Folder for stream recordings</label>
+            <button type="button" class="fm-btn" id="btn-recording-folder" onclick="pickRecordingFolder()">Choose folder</button>
+            <button type="button" class="fm-btn" id="btn-recording-folder-clear" onclick="clearRecordingFolder()">Clear</button>
+            <span id="settings-recording-path" style="font-size:12px; color:var(--muted); margin-left:8px;">Not set</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /main -->
 </div><!-- /app -->
 
@@ -1231,14 +1278,15 @@ body {
 
     <div class="form-row">
       <div class="form-group">
-        <label class="form-label">VPS Address</label>
-        <input class="form-input" id="in-server" placeholder="192.168.1.1" value="localhost" />
+        <label class="form-label">Server (same as page address)</label>
+        <input class="form-input" id="in-server" placeholder="IP or hostname" />
       </div>
       <div class="form-group" style="max-width:90px;">
         <label class="form-label">Port</label>
-        <input class="form-input" id="in-port" placeholder="8080" value="8080" />
+        <input class="form-input" id="in-port" placeholder="80" title="80 via nginx; 8080 = direct (use if connection fails)" />
       </div>
     </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:-6px;margin-bottom:10px;">If you see “Sec-WebSocket-Key” or “HTTP/1.0” in server logs: set Port to <b>8080</b>, then on the server run <code style="font-size:10px;">ufw allow 8080/tcp && ufw reload</code>.</div>
     <div class="form-group">
       <label class="form-label">Room Token</label>
       <input class="form-input" id="in-token" placeholder="my-room-token-123" />
@@ -1251,7 +1299,7 @@ body {
       <input type="checkbox" id="in-ssl" />
       <label for="in-ssl" style="font-size:12px;color:var(--muted);">Use WSS (SSL)</label>
     </div>
-    <button class="btn-primary" onclick="connectToServer()">⚡ CONNECT</button>
+    <button type="button" class="btn-primary" id="btn-modal-connect">⚡ CONNECT</button>
     <div id="modal-error" style="color:var(--danger);font-size:12px;margin-top:10px;min-height:16px;"></div>
   </div>
 </div>
@@ -1272,6 +1320,17 @@ const state = {
   hostOnline: false,
   streaming: false,
   recording: false,
+  recordingStartTime: 0,
+  recordingDurationTimer: null,
+  recordingLastPath: '',
+  recordedFrames: [],
+  recordingStartMs: 0,
+  recordingCanvas: null,
+  recordingCtx: null,
+  recordingRecorder: null,
+  recordingChunks: [],
+  wantDisconnect: false,
+  reconnectTimer: null,
   quality: 50,
   fps: 25,
   scale: 60,
@@ -1296,6 +1355,11 @@ const state = {
   pendingReqs: {},
   reqIdCounter: 0,
   pendingFileChunkResolve: null,
+  // WebRTC: stream over UDP (separate from WebSocket used for files/commands)
+  streamPc: null,
+  streamDc: null,
+  streamOverWebRTC: false,
+  webrtcIceQueue: [],
   // FPS counting
   frameCount: 0,
   lastFpsTime: Date.now(),
@@ -1306,6 +1370,9 @@ const state = {
   recentConfigs: [],
   termHistory: [],
   termHistIdx: -1,
+  // Save paths (FileSystemDirectoryHandle — only in memory, Chrome/Edge)
+  downloadDirHandle: null,
+  recordingDirHandle: null,
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -1360,31 +1427,113 @@ function switchPanel(name) {
     const s = document.getElementById('scale-disp'); if (s) s.textContent = state.scale + '%';
     const c = document.getElementById('stream-compressed'); if (c) c.checked = state.compressed;
   }
+  if (name === 'settings') {
+    const w = document.getElementById('settings-secure-warn');
+    if (w) w.style.display = (typeof window.isSecureContext !== 'undefined' && !window.isSecureContext) ? 'block' : 'none';
+  }
 }
 
 document.querySelectorAll('.nav-btn[data-panel]').forEach(btn => {
   btn.onclick = () => switchPanel(btn.dataset.panel);
 });
 
+// ─── Settings: save paths (File System Access API) ─────────────────────────
+function updateSettingsPathDisplay() {
+  const elD = document.getElementById('settings-download-path');
+  const elR = document.getElementById('settings-recording-path');
+  if (elD) elD.textContent = state.downloadDirHandle ? state.downloadDirHandle.name : 'Not set';
+  if (elR) elR.textContent = state.recordingDirHandle ? state.recordingDirHandle.name : 'Not set';
+}
+
+async function pickDownloadFolder() {
+  if (typeof window.isSecureContext !== 'undefined' && !window.isSecureContext) {
+    notify('Folder picker requires HTTPS or localhost. Open the site via https://...', 'error');
+    return;
+  }
+  if (typeof window.showDirectoryPicker !== 'function') {
+    notify('Choose folder is supported in Chrome/Edge (HTTPS or localhost).', 'warn');
+    return;
+  }
+  try {
+    state.downloadDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    updateSettingsPathDisplay();
+    notify('Downloads will be saved to: ' + state.downloadDirHandle.name, 'success');
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    const msg = e.message || String(e);
+    if (e.name === 'SecurityError' || /secure|https|origin/i.test(msg))
+      notify('Folder picker needs HTTPS or localhost. Open page via https://...', 'error');
+    else
+      notify('Failed to pick folder: ' + msg, 'error');
+  }
+}
+
+function clearDownloadFolder() {
+  state.downloadDirHandle = null;
+  updateSettingsPathDisplay();
+  notify('Download folder cleared', 'info');
+}
+
+async function pickRecordingFolder() {
+  if (typeof window.isSecureContext !== 'undefined' && !window.isSecureContext) {
+    notify('Folder picker requires HTTPS or localhost. Open the site via https://...', 'error');
+    return;
+  }
+  if (typeof window.showDirectoryPicker !== 'function') {
+    notify('Choose folder is supported in Chrome/Edge (HTTPS or localhost).', 'warn');
+    return;
+  }
+  try {
+    state.recordingDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    updateSettingsPathDisplay();
+    notify('Recordings will be saved to: ' + state.recordingDirHandle.name, 'success');
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    const msg = e.message || String(e);
+    if (e.name === 'SecurityError' || /secure|https|origin/i.test(msg))
+      notify('Folder picker needs HTTPS or localhost. Open page via https://...', 'error');
+    else
+      notify('Failed to pick folder: ' + msg, 'error');
+  }
+}
+
+function clearRecordingFolder() {
+  state.recordingDirHandle = null;
+  updateSettingsPathDisplay();
+  notify('Recording folder cleared', 'info');
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  WEBSOCKET
 // ═══════════════════════════════════════════════════════════════
 function connectToServer() {
-  const server = document.getElementById('in-server').value.trim();
-  const port   = document.getElementById('in-port').value.trim() || '8080';
-  const token  = document.getElementById('in-token').value.trim();
-  const pass   = document.getElementById('in-pass').value;
-  const ssl    = document.getElementById('in-ssl').checked;
-
-  if (!server || !token) {
-    document.getElementById('modal-error').textContent = 'Server and token are required';
+  const errEl = document.getElementById('modal-error');
+  if (errEl) errEl.textContent = '';
+  let server, port, token, pass, ssl;
+  try {
+    server = document.getElementById('in-server').value.trim();
+    const portEl = document.getElementById('in-port').value.trim();
+    const defaultPort = (window.location.port && window.location.port !== '') ? window.location.port : (window.location.protocol === 'https:' ? '443' : '80');
+    port   = portEl || defaultPort;
+    token  = document.getElementById('in-token').value.trim();
+    pass   = document.getElementById('in-pass') ? document.getElementById('in-pass').value : '';
+    ssl    = document.getElementById('in-ssl') ? document.getElementById('in-ssl').checked : false;
+  } catch (e) {
+    if (errEl) errEl.textContent = 'Error: ' + (e.message || e);
     return;
   }
+  if (!server || !token) {
+    if (errEl) errEl.textContent = 'Server and token are required';
+    return;
+  }
+
+  if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
+  state.wantDisconnect = false;
 
   const proto = ssl ? 'wss' : 'ws';
   const url = `${proto}://${server}:${port}/client`;
   setConnStatus('connecting');
-  document.getElementById('modal-error').textContent = 'Connecting...';
+  if (errEl) errEl.textContent = 'Connecting...';
 
   if (state.ws) { state.ws.close(); state.ws = null; }
 
@@ -1408,16 +1557,28 @@ function connectToServer() {
   ws.onclose = () => {
     state.connected = false;
     state.streaming = false;
+    state.ws = null;
     setConnStatus('disconnected');
     addLog('Disconnected from server', 'WARN');
-    notify('Disconnected', 'error');
     document.getElementById('btn-connect').classList.remove('hidden');
     document.getElementById('btn-disconnect').classList.add('hidden');
     document.getElementById('btn-stream-toggle').textContent = '▶ STREAM';
+    if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+    if (!state.wantDisconnect && (document.getElementById('in-server').value.trim() && document.getElementById('in-token').value.trim())) {
+      notify('Connection lost. Reconnecting in 2s...', 'info', 2000);
+      state.reconnectTimer = setTimeout(() => {
+        state.reconnectTimer = null;
+        state.wantDisconnect = false;
+        connectToServer();
+      }, 2000);
+    } else {
+      notify('Disconnected', 'error');
+    }
+    state.wantDisconnect = false;
   };
 
   ws.onerror = () => {
-    document.getElementById('modal-error').textContent = 'Connection failed. Check address/port.';
+    if (errEl) errEl.textContent = 'Connection failed. Try Port 8080 (direct) if behind a proxy.';
     setConnStatus('disconnected');
   };
 }
@@ -1472,6 +1633,26 @@ function handleText(raw) {
     return;
   }
 
+  // WebRTC signaling (from host): answer and ICE candidates
+  if (msg.webrtc_answer && state.streamPc) {
+    (async () => {
+      try {
+        const desc = typeof msg.webrtc_answer === 'string' ? JSON.parse(msg.webrtc_answer) : msg.webrtc_answer;
+        await state.streamPc.setRemoteDescription(new RTCSessionDescription(desc));
+        state.webrtcIceQueue.forEach(c => state.streamPc.addIceCandidate(c).catch(() => {}));
+        state.webrtcIceQueue = [];
+      } catch (e) { addLog('WebRTC setRemoteDescription: ' + ((e && e.message) || String(e)), 'WARN'); }
+    })();
+  }
+  if (msg.webrtc_ice && state.streamPc) {
+    try {
+      const c = typeof msg.webrtc_ice === 'string' ? JSON.parse(msg.webrtc_ice) : msg.webrtc_ice;
+      const candidate = new RTCIceCandidate(c);
+      if (state.streamPc.remoteDescription) state.streamPc.addIceCandidate(candidate).catch(() => {});
+      else state.webrtcIceQueue.push(candidate);
+    } catch (e) {}
+  }
+
   // Unsolicited events
   if (msg.event === 'client_joined') addLog('Client joined: ' + msg.data?.user_id, 'INFO');
   if (msg.event === 'client_left')   addLog('Client left: ' + msg.data?.user_id, 'INFO');
@@ -1484,7 +1665,7 @@ function handleBinary(buf) {
   const sig = String.fromCharCode(arr[0], arr[1], arr[2], arr[3]);
 
   if (sig === 'SCRN') {
-    // Screen frame: SCRN(4) + w(4) + h(4) + jpeg
+    if (!state.streaming) return;
     if (arr.length < 12) return;
     const w = new DataView(buf).getUint32(4, true);
     const h = new DataView(buf).getUint32(8, true);
@@ -1558,11 +1739,27 @@ function setConnStatus(s) {
   }
 }
 
-document.getElementById('btn-connect').onclick = () => {
+var elConnect = document.getElementById('btn-connect');
+if (elConnect) elConnect.onclick = () => {
   document.getElementById('modal-overlay').classList.remove('hidden');
 };
+var elModalConnect = document.getElementById('btn-modal-connect');
+if (elModalConnect) elModalConnect.addEventListener('click', connectToServer);
 document.getElementById('btn-disconnect').onclick = () => {
-  if (state.ws) state.ws.close();
+  state.wantDisconnect = true;
+  if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
+  if (state.streaming && state.ws && state.ws.readyState === WebSocket.OPEN) {
+    state.streaming = false;
+    document.getElementById('btn-stream-toggle').textContent = '▶ STREAM';
+    document.getElementById('btn-stream-toggle').classList.remove('active');
+    const doClose = () => { if (state.ws) state.ws.close(); };
+    Promise.race([
+      sendCmd({ cmd: 'stream_stop' }).catch(() => {}),
+      new Promise(r => setTimeout(r, 2000))
+    ]).then(doClose).catch(doClose);
+  } else if (state.ws) {
+    state.ws.close();
+  }
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -1587,6 +1784,81 @@ function renderFrame(jpegArr, w, h, totalBytes) {
     document.getElementById('no-stream').style.display = 'none';
     document.getElementById('stream-stats').classList.remove('hidden');
     document.getElementById('st-res').textContent = `${w}×${h}`;
+    if (state.recording) {
+      if (!state.recordingRecorder) {
+        const c = document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+        const rctx = c.getContext('2d');
+        const fps = Math.max(1, state.fps || 15);
+        const stream = c.captureStream(fps);
+        let mime = 'video/webm';
+        if (!MediaRecorder.isTypeSupported(mime)) mime = 'video/webm;codecs=vp8';
+        if (!MediaRecorder.isTypeSupported(mime)) mime = 'video/mp4';
+        const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 2500000 });
+        rec.ondataavailable = e => { if (e.data && e.data.size) state.recordingChunks.push(e.data); };
+        rec.onstop = async () => {
+          const mimeType = (rec && rec.mimeType) || 'video/webm';
+          const blob = new Blob(state.recordingChunks, { type: mimeType });
+          const ext = (mimeType || '').indexOf('webm') >= 0 ? 'webm' : 'mp4';
+          const now = new Date();
+          const fn = 'RemoteDesktop_' + now.getFullYear() + String(now.getMonth()+1).padStart(2,'0') + String(now.getDate()).padStart(2,'0') + '_' + String(now.getHours()).padStart(2,'0') + String(now.getMinutes()).padStart(2,'0') + String(now.getSeconds()).padStart(2,'0') + '.' + ext;
+          const lastEl = document.getElementById('rec-last-path');
+          const hintEl = document.getElementById('rec-where-hint');
+          const setSaved = (name, locText) => {
+            state.recordingLastPath = name;
+            if (lastEl) { lastEl.textContent = '📁 ' + name; lastEl.title = locText; }
+            if (hintEl) { hintEl.style.display = 'block'; hintEl.textContent = 'Location: ' + locText; }
+          };
+          try {
+            if (state.recordingDirHandle && typeof state.recordingDirHandle.getFileHandle === 'function') {
+              const handle = await state.recordingDirHandle.getFileHandle(fn, { create: true });
+              const w = await handle.createWritable();
+              await w.write(blob);
+              await w.close();
+              setSaved(fn, 'folder "' + state.recordingDirHandle.name + '" (from Settings).');
+              notify('Saved: ' + fn + ' — in folder "' + state.recordingDirHandle.name + '"', 'success');
+            } else if (typeof window.showSaveFilePicker === 'function') {
+              const handle = await window.showSaveFilePicker({ suggestedName: fn, types: [{ description: 'Video', accept: { 'video/webm': ['.webm'], 'video/mp4': ['.mp4'] } }] });
+              const w = await handle.createWritable();
+              await w.write(blob);
+              await w.close();
+              setSaved(handle.name, 'the folder you selected in the "Save as" dialog.');
+              notify('Saved: ' + handle.name + ' — in the folder you chose', 'success');
+            } else {
+              const a = document.createElement('a');
+              a.href = URL.createObjectURL(blob);
+              a.download = fn;
+              a.click();
+              setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+              setSaved(fn, 'usually your Downloads folder (browser menu → Downloads).');
+              notify('Saved as ' + fn + ' — check Downloads folder or browser menu → Downloads', 'info');
+            }
+          } catch (e) {
+            if (e && e.name === 'AbortError') {
+              if (lastEl) lastEl.textContent = 'Save cancelled';
+              if (hintEl) hintEl.style.display = 'none';
+            } else {
+              const a = document.createElement('a');
+              a.href = URL.createObjectURL(blob);
+              a.download = fn;
+              a.click();
+              setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+              setSaved(fn, 'usually your Downloads folder (browser menu → Downloads).');
+              notify('Saved as ' + fn + ' — check Downloads folder', 'success');
+            }
+          }
+          state.recordingChunks = [];
+        };
+        state.recordingCanvas = c;
+        state.recordingCtx = rctx;
+        state.recordingRecorder = rec;
+        state.recordingChunks = [];
+        rec.start(1000);
+      }
+      if (state.recordingCtx)
+        state.recordingCtx.drawImage(img, 0, 0, w, h);
+    }
   };
   img.src = url;
 }
@@ -1614,19 +1886,84 @@ document.getElementById('btn-stream-toggle').onclick = () => {
   if (state.streaming) stopStream(); else startStream();
 };
 
+function parseScrnAndRender(buf) {
+  const arr = new Uint8Array(buf);
+  if (arr.length < 12) return;
+  const sig = String.fromCharCode(arr[0], arr[1], arr[2], arr[3]);
+  if (sig !== 'SCRN') return;
+  const w = new DataView(buf).getUint32(4, true);
+  const h = new DataView(buf).getUint32(8, true);
+  const jpeg = new Uint8Array(buf, 12);
+  renderFrame(jpeg, w, h, buf.byteLength);
+}
+
 async function startStream() {
+  state.streamOverWebRTC = false;
+  state.webrtcIceQueue = [];
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    iceCandidatePoolSize: 0
+  });
+  const dc = pc.createDataChannel('stream', { ordered: false, maxRetransmits: 0 });
+  dc.binaryType = 'arraybuffer';
+  dc.onmessage = (e) => {
+    if (e.data && state.streamOverWebRTC) parseScrnAndRender(e.data);
+  };
+  dc.onopen = () => {
+    state.streamOverWebRTC = true;
+    addLog('Stream: WebRTC (UDP) active', 'OK');
+  };
+  dc.onclose = () => { state.streamOverWebRTC = false; };
+  pc.onicecandidate = (ev) => {
+    if (ev.candidate && state.ws && state.ws.readyState === 1)
+      sendRaw(JSON.stringify({ webrtc_ice: ev.candidate }));
+  };
+  state.streamPc = pc;
+  state.streamDc = dc;
+
+  let offer;
   try {
-    await sendCmd({ cmd:'stream_start', codec: state.codec, quality: state.quality, fps: state.fps, scale: state.scale });
-    state.streaming = true;
-    document.getElementById('btn-stream-toggle').textContent = '⏹ STOP';
-    document.getElementById('btn-stream-toggle').classList.add('active');
-    addLog('Stream started', 'OK');
-    switchPanel('screen');
-  } catch(e) { notify('Stream error: '+e.message, 'error'); }
+    offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+  } catch (e) {
+    addLog('WebRTC createOffer: ' + e.message, 'WARN');
+  }
+
+  try {
+    await sendCmd({
+      cmd: 'stream_start',
+      codec: state.codec,
+      quality: state.quality,
+      fps: state.fps,
+      scale: state.scale,
+      webrtc_offer: offer ? { type: pc.localDescription.type, sdp: pc.localDescription.sdp } : null
+    });
+  } catch (e) {
+    pc.close();
+    state.streamPc = null;
+    state.streamDc = null;
+    notify('Stream error: ' + e.message, 'error');
+    return;
+  }
+
+  state.streaming = true;
+  document.getElementById('btn-stream-toggle').textContent = '⏹ STOP';
+  document.getElementById('btn-stream-toggle').classList.add('active');
+  addLog('Stream started (WebSocket: files/commands; WebRTC used for video when supported)', 'OK');
+  switchPanel('screen');
+
+  setTimeout(() => {
+    if (!state.streamOverWebRTC && state.streaming)
+      addLog('Stream: using WebSocket (TCP) for video', 'INFO');
+  }, 4000);
 }
 
 async function stopStream() {
   state.streaming = false;
+  state.streamOverWebRTC = false;
+  if (state.streamDc) { state.streamDc.close(); state.streamDc = null; }
+  if (state.streamPc) { state.streamPc.close(); state.streamPc = null; }
+  state.webrtcIceQueue = [];
   document.getElementById('btn-stream-toggle').textContent = '▶ STREAM';
   document.getElementById('btn-stream-toggle').classList.remove('active');
   document.getElementById('no-stream').style.display = 'flex';
@@ -1682,25 +2019,62 @@ function requestFullscreen() { document.getElementById('panel-screen').requestFu
 
 // Recording
 document.getElementById('btn-record').onclick = toggleRecording;
+function formatDuration(sec) {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return (m > 0 ? m + ':' : '') + (s < 10 ? '0' : '') + s;
+}
+function updateRecordingDuration() {
+  if (!state.recording || !state.recordingStartTime) return;
+  const el = document.getElementById('rec-duration');
+  if (el) el.textContent = formatDuration(Math.floor((Date.now() - state.recordingStartTime) / 1000));
+}
 async function toggleRecording() {
-  if (!state.hostOnline) { notify('Host not online', 'warn'); return; }
+  if (!state.connected || !state.hostOnline) { notify('Connect and start stream first', 'warn'); return; }
+  if (!state.streaming) { notify('Start the stream first', 'warn'); return; }
   if (!state.recording) {
-    try {
-      const r = await sendCmd({ cmd:'record_start' });
-      state.recording = true;
-      document.getElementById('btn-record').classList.add('active');
-      document.getElementById('btn-rec-overlay').classList.add('rec-active');
-      notify('Recording started: '+r, 'success');
-      addLog('Recording started: '+r, 'OK');
-    } catch(e) { notify('Record error: '+e.message, 'error'); }
+    state.recordingStartMs = Date.now();
+    state.recording = true;
+    state.recordingStartTime = Date.now();
+    state.recordingCanvas = null;
+    const lastEl = document.getElementById('rec-last-path');
+    const hintEl = document.getElementById('rec-where-hint');
+    if (lastEl) lastEl.textContent = '';
+    if (hintEl) { hintEl.textContent = ''; hintEl.style.display = 'none'; }
+    state.recordingCtx = null;
+    state.recordingRecorder = null;
+    state.recordingChunks = [];
+    document.getElementById('btn-record').classList.add('active');
+    document.getElementById('btn-rec-overlay').classList.add('rec-active');
+    if (state.recordingDurationTimer) clearInterval(state.recordingDurationTimer);
+    state.recordingDurationTimer = setInterval(updateRecordingDuration, 1000);
+    updateRecordingDuration();
+    notify('Recording (WebM/MP4, saved when you stop)', 'success');
+    addLog('Recording started — format: WebM (standard)', 'OK');
   } else {
+    state.recording = false;
+    if (state.recordingDurationTimer) { clearInterval(state.recordingDurationTimer); state.recordingDurationTimer = null; }
+    document.getElementById('btn-record').classList.remove('active');
+    document.getElementById('btn-rec-overlay').classList.remove('rec-active');
+    document.getElementById('rec-duration').textContent = '';
+    const btn = document.getElementById('btn-record');
+    btn.innerHTML = '⏺ Saving...';
+    btn.disabled = true;
     try {
-      const r = await sendCmd({ cmd:'record_stop' });
-      state.recording = false;
-      document.getElementById('btn-record').classList.remove('active');
-      document.getElementById('btn-rec-overlay').classList.remove('rec-active');
-      notify(`Recording stopped. Frames: ${r?.frames}`, 'success');
-    } catch(e) { notify('Stop error: '+e.message, 'error'); }
+      if (state.recordingRecorder && state.recordingRecorder.state !== 'inactive') {
+        state.recordingRecorder.stop();
+        notify('Saving video (WebM)...', 'info');
+      } else {
+        notify('No video recorded', 'warn');
+      }
+      state.recordingCanvas = null;
+      state.recordingCtx = null;
+      state.recordingRecorder = null;
+    } catch (e) { notify('Save error: ' + (e?.message || e), 'error'); }
+    finally {
+      btn.disabled = false;
+      btn.innerHTML = '⏺ REC <span id="rec-duration"></span>';
+    }
   }
 }
 
@@ -1755,7 +2129,7 @@ function renderFileList(items) {
     tr.className = 'fm-row' + (isDir ? ' fm-dir' : '');
     tr.dataset.name = item.name;
     tr.innerHTML = `
-      <td><input type="checkbox" class="fm-cb" onchange="onFileCheck(event,'${escHtml(item.name)}')" /></td>
+      <td><input type="checkbox" class="fm-cb" onchange="onFileCheck(event)" /></td>
       <td><span class="fm-icon">${icon}</span> <span class="fm-name ellipsis" style="max-width:320px;display:inline-block;vertical-align:middle">${escHtml(item.name)}</span></td>
       <td class="fm-size">${size}</td>
       <td class="fm-date">${escHtml(date)}</td>
@@ -1824,22 +2198,28 @@ function toggleSelectAll(checked) {
     if (name) { if(checked) state.selectedFiles.add(name); else state.selectedFiles.delete(name); }
   });
 }
-function onFileCheck(e, name) {
+function onFileCheck(e) {
+  const row = e.target.closest('tr');
+  const name = row && row.dataset && row.dataset.name;
+  if (!name) return;
   if (e.target.checked) state.selectedFiles.add(name);
   else state.selectedFiles.delete(name);
 }
 
 async function deleteSelected() {
-  if (!state.selectedFiles.size) { notify('No files selected', 'warn'); return; }
-  if (!confirm(`Delete ${state.selectedFiles.size} item(s)?`)) return;
+  const selectedNames = getSelectedFileNames();
+  if (!selectedNames.length) { notify('No files selected', 'warn'); return; }
+  if (!confirm(`Delete ${selectedNames.length} item(s)?`)) return;
   let ok = 0, fail = 0;
-  for (const name of state.selectedFiles) {
+  const base = normPath(state.currentPath) + '\\';
+  for (const name of selectedNames) {
     try {
-      await sendCmd({ cmd:'file_delete', path: state.currentPath+'\\'+name });
+      await sendCmd({ cmd:'file_delete', path: base + name });
       ok++;
     } catch { fail++; }
   }
-  state.selectedFiles.clear();
+  selectedNames.forEach(function(n) { state.selectedFiles.delete(n); });
+  document.querySelectorAll('.fm-cb').forEach(cb => { cb.checked = false; });
   notify(`Deleted ${ok}. Failed: ${fail}`, fail ? 'warn' : 'success');
   refreshFiles();
 }
@@ -1892,14 +2272,29 @@ async function collectFilesToDownload(dirPath, prefix) {
   return out;
 }
 
+function getSelectedFileNames() {
+  const names = [];
+  document.querySelectorAll('.fm-cb:checked').forEach(function(cb) {
+    const tr = cb.closest('tr');
+    if (!tr) return;
+    let name = tr.dataset && tr.dataset.name;
+    if (!name) {
+      const nameEl = tr.querySelector('.fm-name');
+      if (nameEl) name = (nameEl.textContent || '').trim();
+    }
+    if (name) names.push(name);
+  });
+  return names;
+}
 async function downloadSelected() {
-  if (!state.selectedFiles.size) {
+  const selectedNames = getSelectedFileNames();
+  if (!selectedNames.length) {
     notify('Select files or folders', 'warn');
     return;
   }
   const base = normPath(state.currentPath) + '\\';
   const toDownload = [];
-  for (const name of state.selectedFiles) {
+  for (const name of selectedNames) {
     const item = state.fileList.find(i => (i.name || '') === name);
     const path = base + name;
     if (!item || (item.type || '').toLowerCase() !== 'dir') {
@@ -1918,30 +2313,62 @@ async function downloadSelected() {
     } catch (e) { notify('Failed: ' + saveName, 'error'); }
     if (i < toDownload.length - 1) await new Promise(r => setTimeout(r, 350));
   }
-  state.selectedFiles.clear();
+  selectedNames.forEach(function(n) { state.selectedFiles.delete(n); });
   document.querySelectorAll('.fm-cb').forEach(cb => { cb.checked = false; });
   notify(`Downloaded ${toDownload.length} file(s)`, 'success');
 }
 
+// Collect all file paths to copy (recursive for folders). fromBase = source dir with \; destBase = destination dir with \
+async function collectFilesToCopy(dirPath, destBase, fromBase, list) {
+  const baseWithSlash = normPath(dirPath) + (dirPath.endsWith('\\') ? '' : '\\');
+  let raw;
+  try { raw = await sendCmd({ cmd: 'file_list', path: baseWithSlash }); } catch (e) { return; }
+  const data = typeof raw === 'string' ? (function(){ try { return JSON.parse(raw); } catch(_){ return {}; } })() : raw;
+  const items = data.items || (Array.isArray(data) ? data : []) || [];
+  for (const item of items) {
+    const name = item.name || item.fileName || '';
+    if (!name || name === '.' || name === '..') continue;
+    const from = baseWithSlash + name;
+    const rel = from.substring(fromBase.length);
+    const to = destBase + rel;
+    if ((item.type || item.fileAttribute || '').toLowerCase() === 'dir' || item.isDir) {
+      try { await sendCmd({ cmd: 'file_mkdir', path: to + '\\' }); } catch (_) {}
+      await collectFilesToCopy(from + '\\', destBase, fromBase, list);
+    } else {
+      list.push({ from, to });
+    }
+  }
+}
+
 async function copySelected() {
-  if (!state.selectedFiles.size) { notify('Select files or folders', 'warn'); return; }
-  const dest = prompt('Destination path (e.g. D:\\Backup\\):', state.currentPath);
+  const selectedNames = getSelectedFileNames();
+  if (!selectedNames.length) { notify('Select files or folders', 'warn'); return; }
+  const dest = prompt('Destination path on host (e.g. D:\\Backup\\):', state.currentPath);
   if (!dest) return;
-  const destBase = normPath(dest) + '\\';
-  try {
-    await sendCmd({ cmd: 'file_mkdir', path: destBase });
-  } catch (e) {}
-  let ok = 0, fail = 0;
+  const destBase = normPath(dest) + (dest.endsWith('\\') ? '' : '\\');
   const base = normPath(state.currentPath) + '\\';
-  for (const name of state.selectedFiles) {
+  const toCopy = [];
+  for (const name of selectedNames) {
+    const item = state.fileList.find(i => (i.name || '').trim() === (name || '').trim());
     const from = base + name;
     const to = destBase + name;
+    if (item && ((item.type || '').toLowerCase() === 'dir' || item.isDir)) {
+      try { await sendCmd({ cmd: 'file_mkdir', path: to + '\\' }); } catch (_) {}
+      await collectFilesToCopy(from + '\\', destBase + name + '\\', from + '\\', toCopy);
+    } else {
+      toCopy.push({ from, to });
+    }
+  }
+  if (!toCopy.length) { notify('Nothing to copy', 'warn'); return; }
+  notify(`Copying ${toCopy.length} item(s)...`, 'info');
+  let ok = 0, fail = 0;
+  for (const { from, to } of toCopy) {
     try {
       await sendCmd({ cmd: 'file_copy', from, to });
       ok++;
     } catch (e) { fail++; }
   }
-  state.selectedFiles.clear();
+  selectedNames.forEach(function(n) { state.selectedFiles.delete(n); });
   document.querySelectorAll('.fm-cb').forEach(cb => { cb.checked = false; });
   notify(`Copied ${ok}. Failed: ${fail}`, fail ? 'warn' : 'success');
   refreshFiles();
@@ -1958,7 +2385,10 @@ async function downloadFromHost(path, filename, silent) {
   let totalSize = 0;
   try {
     const info = await sendCmd({ cmd:'file_info', path });
-    totalSize = (info && typeof info === 'object' && 'size' in info) ? info.size : (info || 0);
+    if (info != null) {
+      if (typeof info === 'object' && 'size' in info) totalSize = Number(info.size) || 0;
+      else if (typeof info === 'string') { try { const o = JSON.parse(info); totalSize = (o && typeof o.size === 'number') ? o.size : 0; } catch(_) {} }
+    }
   } catch {}
 
   while (true) {
@@ -1988,11 +2418,37 @@ async function downloadFromHost(path, filename, silent) {
   chunks.forEach(c => { merged.set(c, pos); pos += c.length; });
   
   const blob = new Blob([merged]);
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filename; a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  if (!silent) notify(`Downloaded: ${filename}`, 'success');
+  const saveViaLink = () => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    if (!silent) notify(`Downloaded: ${filename}`, 'success');
+  };
+  if (state.downloadDirHandle && typeof state.downloadDirHandle.getFileHandle === 'function') {
+    try {
+      const handle = await state.downloadDirHandle.getFileHandle(filename, { create: true });
+      const w = await handle.createWritable();
+      await w.write(blob);
+      await w.close();
+      if (!silent) notify(`Saved to folder "${state.downloadDirHandle.name}": ${filename}`, 'success');
+    } catch (e) {
+      if (!silent) notify('Save to folder failed: ' + (e.message || e) + ' — using download', 'warn');
+      saveViaLink();
+    }
+  } else if (typeof window.showSaveFilePicker === 'function' && window.isSecureContext) {
+    try {
+      const handle = await window.showSaveFilePicker({ suggestedName: filename });
+      const w = await handle.createWritable();
+      await w.write(blob);
+      await w.close();
+      if (!silent) notify('Saved: ' + handle.name, 'success');
+    } catch (e) {
+      if (e.name !== 'AbortError') saveViaLink();
+    }
+  } else {
+    saveViaLink();
+  }
 }
 
 // Binary file chunk handler (override in state)
@@ -2398,6 +2854,12 @@ async function refreshDashboard() {
     document.getElementById('d-ram-pct').textContent = d.ram_used_pct + '%';
     document.getElementById('d-ram-info').textContent = formatBytes((d.ram_total_mb - d.ram_avail_mb) * 1048576) + ' / ' + formatBytes(d.ram_total_mb * 1048576);
     document.getElementById('d-ram-bar').style.width = d.ram_used_pct + '%';
+    const cpuPct = (d.cpu_pct != null && d.cpu_pct >= 0) ? d.cpu_pct : null;
+    const gpuPct = (d.gpu_pct != null && d.gpu_pct >= 0) ? d.gpu_pct : null;
+    document.getElementById('d-cpu-pct').textContent = cpuPct != null ? (cpuPct + '%') : '—';
+    document.getElementById('d-cpu-bar').style.width = (cpuPct != null ? cpuPct : 0) + '%';
+    document.getElementById('d-gpu-pct').textContent = gpuPct != null ? (gpuPct + '%') : '—';
+    document.getElementById('d-gpu-bar').style.width = (gpuPct != null ? gpuPct : 0) + '%';
     document.getElementById('d-hostname').textContent = d.hostname || '—';
     document.getElementById('d-username').textContent = 'User: ' + (d.username || '—');
     
@@ -2406,7 +2868,9 @@ async function refreshDashboard() {
     document.getElementById('d-uptime').textContent = h + 'h';
     document.getElementById('d-uptime-sub').textContent = `${h}h ${m}m uptime`;
     
-    document.getElementById('sys-info-bar').textContent = `${d.hostname} | RAM: ${d.ram_used_pct}% | Up: ${h}h ${m}m`;
+    const cpuStr = (d.cpu_pct != null && d.cpu_pct >= 0) ? (d.cpu_pct + '%') : '—';
+    const gpuStr = (d.gpu_pct != null && d.gpu_pct >= 0) ? (d.gpu_pct + '%') : '—';
+    document.getElementById('sys-info-bar').textContent = `${d.hostname} | RAM: ${d.ram_used_pct}% | CPU: ${cpuStr} | GPU: ${gpuStr} | Up: ${h}h ${m}m`;
     document.getElementById('d-codec').textContent = 'Codec: ' + state.codec;
     addLog(`Dashboard refreshed — RAM: ${d.ram_used_pct}%`, 'INFO');
   } catch {}
@@ -2458,17 +2922,29 @@ document.addEventListener('keydown', e => {
   }
 });
 
-// Restore saved connection
-try {
-  const s = localStorage.getItem('rdp_server');
-  const p = localStorage.getItem('rdp_port');
-  const t = localStorage.getItem('rdp_token');
-  const pw = localStorage.getItem('rdp_password');
-  if (s) document.getElementById('in-server').value = s;
-  if (p) document.getElementById('in-port').value = p;
-  if (t) document.getElementById('in-token').value = t;
-  if (pw) document.getElementById('in-pass').value = pw;
-} catch (e) {}
+// Pre-fill Server and Port from current page URL (so no need to re-enter when opened by IP)
+// Then restore saved connection if any
+(function() {
+  const inServer = document.getElementById('in-server');
+  const inPort = document.getElementById('in-port');
+  const inToken = document.getElementById('in-token');
+  const inPass = document.getElementById('in-pass');
+  const defaultPort = (window.location.port && window.location.port !== '') ? window.location.port : (window.location.protocol === 'https:' ? '443' : '80');
+  if (inServer) inServer.value = window.location.hostname || '';
+  if (inPort) inPort.value = defaultPort;
+  const inSsl = document.getElementById('in-ssl');
+  if (inSsl && window.location.protocol === 'https:') inSsl.checked = true;
+  try {
+    const s = localStorage.getItem('rdp_server');
+    const p = localStorage.getItem('rdp_port');
+    const t = localStorage.getItem('rdp_token');
+    const pw = localStorage.getItem('rdp_password');
+    if (s) inServer.value = s;
+    if (p) inPort.value = p;
+    if (t) inToken.value = t;
+    if (pw) inPass.value = pw;
+  } catch (e) {}
+})();
 
 addLog('RemoteDesk PRO initialized', 'OK');
 addLog('Click CONNECT to begin', 'INFO');

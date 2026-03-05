@@ -62,7 +62,38 @@ sudo systemctl start rdp-server
 sudo ufw allow 8080/tcp
 ```
 
-**Если перед приложением стоит прокси (nginx, caddy и т.п.):** прокси должен передавать заголовки WebSocket без изменений. Иначе возможны ошибки 426/400 (Connection, Upgrade, Sec-WebSocket-Key). Пример для **nginx**:
+**Раздача страницы и WebSocket через nginx (одной командой):**
+```bash
+cd /opt/remote_desktop_web_new   # или путь к проекту
+sudo apt install -y nginx
+sudo bash deploy-web.sh
+```
+Скрипт создаёт `/var/www/remote-desktop`, копирует туда `index.html`, ставит конфиг nginx и перезагружает его. После этого интерфейс открывается по `http://IP_СЕРВЕРА/` (порт 80). В форме подключения укажите: Server = IP сервера, Port = 80.
+
+**Работа по HTTPS (рекомендуется: выбор папки в Chrome, безопасное соединение):**
+
+- **Только IP, без домена** — самоподписанный сертификат:
+```bash
+sudo bash deploy-web-https-ip.sh
+# или явно указать IP: sudo bash deploy-web-https-ip.sh 192.168.1.100
+```
+Откройте в браузере `https://ВАШ_IP/`. При первом заходе браузер покажет предупреждение о сертификате — нажмите «Дополнительно» → «Перейти на сайт (небезопасно)». После этого сайт будет работать по HTTPS (в т.ч. выбор папки в Chrome). В форме: Port = 443, галочка «Use WSS (SSL)». Откройте порты: `sudo ufw allow 443/tcp && sudo ufw reload`.
+
+- **С доменом** — Let's Encrypt:
+```bash
+# Домен должен указывать на IP вашего VPS (DNS A-запись)
+sudo bash deploy-web-https.sh ВАШ_ДОМЕН
+# Пример: sudo EMAIL=admin@example.com bash deploy-web-https.sh rd.example.com
+```
+Скрипт ставит nginx, получает сертификат Let's Encrypt и настраивает редирект HTTP → HTTPS. Открывайте сайт по `https://ВАШ_ДОМЕН/`. Продление сертификата: `sudo certbot renew --quiet && sudo systemctl reload nginx` (можно добавить в cron).
+
+**Важно:** Открывайте сайт по `http://IP_СЕРВЕРА/` (порт 80), а не по `http://IP:8080/`. WebSocket требует HTTP/1.1; запросы по HTTP/1.0 отклоняются с 400.
+
+**Клиент не может войти:** убедитесь, что nginx передаёт бэкенду HTTP/1.1. Заново примените конфиг: `sudo bash deploy-web.sh` и `sudo systemctl reload nginx`. В форме подключения укажите Server = IP или домен сервера, Port = 80.
+
+**Ошибка «Missing Sec-WebSocket-Key»:** прокси не передаёт заголовки WebSocket. На VPS выполните: `sudo bash deploy-web.sh`, затем `sudo systemctl reload nginx`. Проверка: `bash check-nginx-ws.sh`. Если перед nginx стоит **Cloudflare** — в панели Cloudflare: Network → WebSockets включить (On).
+
+**Если перед приложением стоит прокси (nginx, caddy и т.п.):** прокси должен передавать запрос к бэкенду по **HTTP/1.1** (`proxy_http_version 1.1;`) и передавать заголовки WebSocket без изменений. Иначе возможны ошибки 426/400 (Connection, Upgrade, Sec-WebSocket-Key, «expected HTTP/1.1»). Пример для **nginx**:
 
 ```nginx
 location / {
@@ -113,6 +144,16 @@ cmake --build build --config Release
 RemoteDesktopHost.exe host_config.json
 ```
 
+**Сборка с WebRTC (стрим по UDP, всё в одном exe):**  
+Установите [vcpkg](https://vcpkg.io/), затем:
+```bash
+vcpkg install libdatachannel:x64-windows-static
+cd NEW_RDP_Cloud
+cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE=[путь_к_vcpkg]/scripts/buildsystems/vcpkg.cmake
+cmake --build build --config Release
+```
+Исполняемый файл будет в `build/bin/Release/RemoteDesktopHost.exe`; стрим пойдёт по WebRTC (DataChannel), файлы и команды — по WebSocket.
+
 ### 3. Web Client
 
 Просто откройте `index.html` в браузере:
@@ -134,6 +175,19 @@ RemoteDesktopHost.exe host_config.json
 | 📝 Config Editor | Редактирование конфиг-файлов на хосте |
 | $_ Terminal | Выполнение команд через cmd.exe |
 | 📊 Dashboard | RAM, uptime, hostname, статистика |
+
+---
+
+## Два транспорта (стриминг и файлы)
+
+Работают одновременно:
+
+| Назначение | Протокол | Описание |
+|------------|----------|----------|
+| **Стриминг экрана** | **WebRTC (UDP)** | Низкая задержка, нет блокировки по потерям. Клиент при старте стрима отправляет WebRTC offer; если хост поддерживает WebRTC, видеокадры идут по DataChannel. |
+| **Файлы и команды** | **WebSocket (TCP)** | Список файлов, скачивание/загрузка, процессы, сервисы, терминал, конфиги — по одному WebSocket. |
+
+Клиент в браузере при нажатии «STREAM» создаёт `RTCPeerConnection` и DataChannel (unordered, low latency), отправляет offer в составе `stream_start`. Если хост пришлёт `webrtc_answer` и ICE — кадры принимаются по WebRTC. Если нет (хост пока без WebRTC) — кадры идут по тому же WebSocket (fallback). Сигнализация (offer/answer/ICE) передаётся через relay по WebSocket.
 
 ---
 

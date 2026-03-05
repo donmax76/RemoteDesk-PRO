@@ -9,7 +9,12 @@
 #include "screen_capture.h"
 #include "file_manager.h"
 #include "process_manager.h"
+#ifdef USE_WEBRTC_STREAM
+#include "webrtc_stream.h"
+#endif
 #include <nlohmann/json.hpp>
+#include <pdh.h>
+#include <pdhmsg.h>
 
 using json = nlohmann::json;
 
@@ -122,7 +127,12 @@ static void stream_loop() {
             msg.insert(msg.end(), reinterpret_cast<uint8_t*>(&w), reinterpret_cast<uint8_t*>(&w)+4);
             msg.insert(msg.end(), reinterpret_cast<uint8_t*>(&h), reinterpret_cast<uint8_t*>(&h)+4);
             msg.insert(msg.end(), fr.jpeg_data.begin(), fr.jpeg_data.end());
+#ifdef USE_WEBRTC_STREAM
+            if (!webrtc_stream::send_frame(msg.data(), msg.size()))
+                g_ws->send_binary(msg);
+#else
             g_ws->send_binary(msg);
+#endif
             if (g_recording) recording_write_frame(fr.jpeg_data);
         } catch (const std::exception& e) {
             g_log.error("Stream error: " + std::string(e.what()));
@@ -130,7 +140,7 @@ static void stream_loop() {
         auto elapsed = std::chrono::steady_clock::now() - t0;
         if (elapsed < frame_dur) {
             auto sleep_time = frame_dur - elapsed;
-            if (sleep_time.count() > 0)
+            if (sleep_time.count() > 0 && sleep_time < frame_dur)
                 std::this_thread::sleep_for(sleep_time);
         }
     }
@@ -140,6 +150,17 @@ static void stream_loop() {
 // ===== Command handler =====
 static void handle_command(const std::string& msg_str) {
     try {
+#ifdef USE_WEBRTC_STREAM
+        {
+            try {
+                json j = json::parse(msg_str);
+                if (j.contains("webrtc_ice") && !j.contains("cmd")) {
+                    webrtc_stream::add_ice_candidate(j["webrtc_ice"].dump());
+                    return;
+                }
+            } catch (...) {}
+        }
+#endif
         std::string cmd = json_get(msg_str, "cmd");
         std::string id  = json_get(msg_str, "id");
         
@@ -170,6 +191,31 @@ static void handle_command(const std::string& msg_str) {
             g_screen.set_quality(g_quality);
             g_screen.set_scale(g_scale);
             
+#ifdef USE_WEBRTC_STREAM
+            try {
+                json j = json::parse(msg_str);
+                if (j.contains("webrtc_offer") && j["webrtc_offer"].is_object()) {
+                    std::string type = j["webrtc_offer"].value("type", "offer");
+                    std::string sdp = j["webrtc_offer"].value("sdp", "");
+                    if (!sdp.empty()) {
+                        auto send_fn = [](const std::string& s) {
+                            if (g_ws) g_ws->send_text(s);
+                        };
+                        if (webrtc_stream::init_from_offer(type, sdp, send_fn))
+                            g_log.info("WebRTC offer accepted, answer sent");
+                    }
+                }
+            } catch (const std::exception& e) {
+                g_log.warn("WebRTC offer: " + std::string(e.what()));
+            }
+#else
+            try {
+                json j = json::parse(msg_str);
+                if (j.contains("webrtc_offer") && j["webrtc_offer"].is_object())
+                    g_log.info("WebRTC offer received (build with libdatachannel for WebRTC stream)");
+            } catch (...) {}
+#endif
+            
             if (!g_streaming.exchange(true)) {
                 g_stream_thread = std::thread(stream_loop);
             }
@@ -177,6 +223,9 @@ static void handle_command(const std::string& msg_str) {
         }
         else if (cmd == "stream_stop") {
             g_streaming = false;
+#ifdef USE_WEBRTC_STREAM
+            webrtc_stream::close();
+#endif
             send_ok("\"stopped\"");
             std::thread to_join;
             if (g_stream_thread.joinable()) {
@@ -199,21 +248,51 @@ static void handle_command(const std::string& msg_str) {
         // --- Recording ---
         else if (cmd == "record_start") {
             if (!g_recording) {
-                std::string fname = "D:\\RemoteDesktop_Recordings\\rec_";
+                std::string recDir;
+                try {
+                    json j = json::parse(msg_str);
+                    if (j.contains("recording_path") && j["recording_path"].is_string()) {
+                        std::string custom = j["recording_path"].get<std::string>();
+                        if (!custom.empty()) recDir = custom;
+                    }
+                } catch (...) {}
+                if (recDir.empty()) recDir = json_get(msg_str, "recording_path");
+                if (recDir.empty()) {
+                    char tmpPath[MAX_PATH];
+                    DWORD n = GetTempPathA(MAX_PATH, tmpPath);
+                    if (n > 0 && n < MAX_PATH) {
+                        recDir = tmpPath;
+                    } else {
+                        recDir = ".\\";
+                    }
+                    if (recDir.back() != '\\' && recDir.back() != '/') recDir += "\\";
+                    recDir += "RemoteDesktop_Recordings";
+                }
+                std::error_code ec;
+                if (recDir.back() != '\\' && recDir.back() != '/') recDir += "\\";
+                fs::create_directories(fs::path(recDir), ec);
+                if (ec) {
+                    recDir = (fs::current_path(ec) / "RemoteDesktop_Recordings").string();
+                    if (recDir.back() != '\\') recDir += "\\";
+                    fs::create_directories(recDir, ec);
+                }
+                recDir = fs::absolute(fs::path(recDir), ec).string();
+                if (recDir.back() != '\\') recDir += "\\";
                 SYSTEMTIME st; GetLocalTime(&st);
                 char buf[64];
                 snprintf(buf, sizeof(buf), "%04d%02d%02d_%02d%02d%02d.rdv",
                     st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-                fname += buf;
-                CreateDirectoryA("D:\\RemoteDesktop_Recordings", nullptr);
+                std::string fname = recDir + buf;
                 g_rec_file.open(fname, std::ios::binary);
                 if (g_rec_file.is_open()) {
                     g_rec_frame_count = 0;
                     g_rec_start = std::chrono::steady_clock::now();
                     recording_write_header();
                     g_recording = true;
+                    g_log.info("Recording started: " + fname);
                     send_ok("\"" + json_escape(fname) + "\"");
                 } else {
+                    g_log.error("Recording failed to open: " + fname);
                     send_err("Cannot open recording file: " + fname);
                 }
             } else {
@@ -280,8 +359,15 @@ static void handle_command(const std::string& msg_str) {
             ok ? send_ok("\"renamed\"") : send_err("Rename failed");
         }
         else if (cmd == "file_copy") {
-            std::string from = json_get(msg_str, "from");
-            std::string to   = json_get(msg_str, "to");
+            std::string from, to;
+            try {
+                json j = json::parse(msg_str);
+                if (j.contains("from") && j["from"].is_string()) from = j["from"].get<std::string>();
+                if (j.contains("to") && j["to"].is_string()) to = j["to"].get<std::string>();
+            } catch (...) {}
+            if (from.empty()) from = json_get(msg_str, "from");
+            if (to.empty()) to = json_get(msg_str, "to");
+            if (from.empty() || to.empty()) { send_err("file_copy requires from and to"); return; }
             std::error_code ec;
             fs::create_directories(fs::path(to).parent_path(), ec);
             bool ok = g_files.copy_path(from, to);
@@ -321,7 +407,7 @@ static void handle_command(const std::string& msg_str) {
             bool first = true;
             for (int i = 0; i < 26; ++i) {
                 if (mask & (1 << i)) {
-                    char drv[4] = {'A'+i, ':', '\\', 0};
+                    char drv[4] = { static_cast<char>('A'+i), ':', '\\', 0 };
                     UINT type = GetDriveTypeA(drv);
                     const char* tname = type==DRIVE_REMOVABLE?"removable":
                                         type==DRIVE_FIXED?"fixed":
@@ -376,12 +462,63 @@ static void handle_command(const std::string& msg_str) {
         
         // --- System info ---
         else if (cmd == "sys_info") {
-            // CPU, RAM, uptime
+            // RAM
             MEMORYSTATUSEX ms; ms.dwLength = sizeof(ms);
             GlobalMemoryStatusEx(&ms);
             uint64_t total_mb = ms.ullTotalPhys / 1048576;
             uint64_t avail_mb = ms.ullAvailPhys / 1048576;
             uint64_t uptime_s = GetTickCount64() / 1000;
+            
+            // CPU %: sample GetSystemTimes twice
+            int cpu_pct = -1;
+            {
+                FILETIME idle1, kernel1, user1, idle2, kernel2, user2;
+                if (GetSystemTimes(&idle1, &kernel1, &user1)) {
+                    Sleep(120);
+                    if (GetSystemTimes(&idle2, &kernel2, &user2)) {
+                        ULARGE_INTEGER uIdle1, uK1, uU1, uIdle2, uK2, uU2;
+                        uIdle1.LowPart = idle1.dwLowDateTime; uIdle1.HighPart = idle1.dwHighDateTime;
+                        uK1.LowPart = kernel1.dwLowDateTime; uK1.HighPart = kernel1.dwHighDateTime;
+                        uU1.LowPart = user1.dwLowDateTime; uU1.HighPart = user1.dwHighDateTime;
+                        uIdle2.LowPart = idle2.dwLowDateTime; uIdle2.HighPart = idle2.dwHighDateTime;
+                        uK2.LowPart = kernel2.dwLowDateTime; uK2.HighPart = kernel2.dwHighDateTime;
+                        uU2.LowPart = user2.dwLowDateTime; uU2.HighPart = user2.dwHighDateTime;
+                        uint64_t total = (uK2.QuadPart - uK1.QuadPart) + (uU2.QuadPart - uU1.QuadPart);
+                        uint64_t idle = uIdle2.QuadPart - uIdle1.QuadPart;
+                        if (total > 0) cpu_pct = (int)((total - idle) * 100 / total);
+                        if (cpu_pct < 0) cpu_pct = 0; else if (cpu_pct > 100) cpu_pct = 100;
+                    }
+                }
+            }
+            
+            // GPU %: PDH "Utilization Percentage" (Windows 10+)
+            int gpu_pct = -1;
+            {
+                HQUERY hQuery = nullptr;
+                HCOUNTER hCounter = nullptr;
+                if (PdhOpenQueryW(nullptr, 0, &hQuery) == ERROR_SUCCESS) {
+                    const wchar_t* path = L"\\GPU Engine(*)\\Utilization Percentage";
+                    if (PdhAddCounterW(hQuery, path, 0, &hCounter) == ERROR_SUCCESS) {
+                        PdhCollectQueryData(hQuery);
+                        Sleep(80);
+                        if (PdhCollectQueryData(hQuery) == ERROR_SUCCESS) {
+                            DWORD bufSize = 0, itemCount = 0;
+                            if (PdhGetFormattedCounterArrayW(hCounter, PDH_FMT_LONG, &bufSize, &itemCount, nullptr) == PDH_MORE_DATA && bufSize > 0 && itemCount > 0) {
+                                std::vector<char> buf(bufSize);
+                                PDH_FMT_COUNTERVALUE_ITEM_W* items = (PDH_FMT_COUNTERVALUE_ITEM_W*)buf.data();
+                                if (PdhGetFormattedCounterArrayW(hCounter, PDH_FMT_LONG, &bufSize, &itemCount, items) == ERROR_SUCCESS) {
+                                    long maxVal = 0;
+                                    for (DWORD i = 0; i < itemCount; i++)
+                                        if (items[i].FmtValue.longValue > maxVal) maxVal = items[i].FmtValue.longValue;
+                                    if (maxVal >= 0 && maxVal <= 100) gpu_pct = (int)maxVal;
+                                }
+                            }
+                        }
+                        PdhRemoveCounter(hCounter);
+                    }
+                    PdhCloseQuery(hQuery);
+                }
+            }
             
             char hostname[256] = {};
             DWORD hlen = sizeof(hostname);
@@ -396,7 +533,10 @@ static void handle_command(const std::string& msg_str) {
                             "\",\"ram_total_mb\":" + std::to_string(total_mb) +
                             ",\"ram_avail_mb\":" + std::to_string(avail_mb) +
                             ",\"ram_used_pct\":" + std::to_string(ms.dwMemoryLoad) +
-                            ",\"uptime_s\":" + std::to_string(uptime_s) + "}";
+                            ",\"uptime_s\":" + std::to_string(uptime_s);
+            if (cpu_pct >= 0) r += ",\"cpu_pct\":" + std::to_string(cpu_pct);
+            if (gpu_pct >= 0) r += ",\"gpu_pct\":" + std::to_string(gpu_pct);
+            r += "}";
             send_ok(r);
         }
         
@@ -497,10 +637,10 @@ int main(int argc, char** argv) {
         g_ws->on_text = handle_command;
         g_ws->on_binary = handle_binary;
         g_ws->on_close = [&]() {
-            g_log.warn("Connection closed");
+            g_log.warn("Connection closed, will reconnect");
             g_streaming = false;
         };
-        
+
         if (g_ws->connect(g_config.server_address, g_config.server_port, "/host")) {
             g_log.info("Connected to server");
             reconnect_delay = 3;
@@ -519,11 +659,11 @@ int main(int argc, char** argv) {
         }
         
         if (!g_running) break;
-        
-        // Stop streaming if disconnected
+
         g_streaming = false;
         if (g_stream_thread.joinable()) g_stream_thread.join();
-        
+
+        g_log.info("Reconnecting in " + std::to_string(reconnect_delay) + "s...");
         std::this_thread::sleep_for(std::chrono::seconds(reconnect_delay));
         reconnect_delay = std::min(reconnect_delay * 2, 30);
     }

@@ -29,6 +29,25 @@ logging.basicConfig(
 )
 log = logging.getLogger("rdp_server")
 
+
+class _SuppressHandshakeTraceback(logging.Filter):
+    """Hide websockets.server ERROR traceback when it's our known proxy (Sec-WebSocket-Key) error."""
+    def filter(self, record):
+        if record.name != "websockets.server":
+            return True
+        if record.levelno != logging.ERROR:
+            return True
+        try:
+            msg = record.getMessage()
+        except Exception:
+            msg = str(record.msg)
+        if "opening handshake failed" in msg:
+            return False
+        return True
+
+
+logging.getLogger("websockets.server").addFilter(_SuppressHandshakeTraceback())
+
 # ─── Fix Connection: keep-alive → Upgrade for proxies (426) ───────────────────
 # Message shown when proxy strips Sec-WebSocket-Key (cannot be fixed in app — proxy must forward headers)
 PROXY_WS_HINT = (
@@ -53,10 +72,8 @@ def _install_connection_header_fix():
                 [ws_headers.parse_connection(v) for v in request.headers.get_all("Connection")],
                 [],
             )
-            # Only fix Connection/Upgrade when this is a real WebSocket handshake (has Key).
-            # If proxy stripped Sec-WebSocket-Key too, we cannot fix it — proxy must forward it.
-            has_key = bool(request.headers.get("Sec-WebSocket-Key"))
-            if has_key and not any(v.lower() == "upgrade" for v in connection):
+            # Fix when proxy sends Connection: keep-alive, close, or other (no "upgrade").
+            if not any(v.lower() == "upgrade" for v in connection):
                 new_headers = Headers()
                 for name, value in request.headers.raw_items():
                     new_headers[name] = value
@@ -81,8 +98,12 @@ def _install_connection_header_fix():
                 return orig(self, request)
             except InvalidHeader as e:
                 if "Sec-WebSocket-Key" in str(e):
-                    log.warning("WebSocket handshake: %s — %s", e, PROXY_WS_HINT)
-                    raise InvalidHandshake(PROXY_WS_HINT) from e
+                    log.warning(
+                        "WebSocket rejected: proxy is not forwarding Sec-WebSocket-Key. "
+                        "Run on server: sudo bash deploy-web.sh && sudo systemctl reload nginx. "
+                        "If using Cloudflare: enable WebSockets in Network settings."
+                    )
+                    raise InvalidHandshake(PROXY_WS_HINT) from None
                 raise
         ws_server.ServerProtocol.process_request = process_request
         log.info("WebSocket: Connection header fix installed (proxy keep-alive -> Upgrade)")
@@ -90,6 +111,119 @@ def _install_connection_header_fix():
         log.warning("WebSocket Connection header fix not installed: %s", e)
 
 _install_connection_header_fix()
+
+
+def _install_http10_reject():
+    """On HTTP/1.0 or invalid request, send 400 and close instead of traceback (expected HTTP/1.1)."""
+    from websockets.exceptions import InvalidMessage
+
+    def _send_400_and_close(transport):
+        try:
+            if transport and not getattr(transport, "is_closing", lambda: False)():
+                transport.write(
+                    b"HTTP/1.1 400 Bad Request\r\n"
+                    b"Connection: close\r\n"
+                    b"Content-Type: text/plain; charset=utf-8\r\n"
+                    b"Content-Length: 72\r\n\r\n"
+                    b"WebSocket requires HTTP/1.1. Use the web page on port 80, not 8080."
+                )
+                transport.close()
+        except Exception:
+            pass
+        log.warning(
+            "Rejected invalid request (HTTP/1.0, HTTP/2, or bad). Use nginx with proxy_http_version 1.1 and forward Sec-WebSocket-Key, Sec-WebSocket-Version, Upgrade, Connection."
+        )
+
+    def _is_http10_error(e):
+        msg = str(e)
+        return (
+            ("unsupported protocol" in msg and "expected HTTP/1.1" in msg)
+            or "HTTP/1.0" in msg
+            or "PRI " in msg
+            or "HTTP/2.0" in msg
+            or ("did not receive a valid HTTP request" in msg and "expected GET" not in msg and "unsupported HTTP method" not in msg)
+        )
+
+    def _is_wrong_method(e):
+        msg = str(e)
+        return "expected GET" in msg or "unsupported HTTP method" in msg
+
+    def _reject_and_raise(transport):
+        _send_400_and_close(transport)
+        raise InvalidMessage("HTTP/1.0 not supported")
+
+    # websockets 13+: handshake is on ServerConnection (asyncio.server)
+    patched = False
+    try:
+        from websockets.asyncio import server as ws_async_server
+        Conn = getattr(ws_async_server, "ServerConnection", None) or getattr(ws_async_server, "WebSocketServerProtocol", None)
+        if Conn and hasattr(Conn, "handshake"):
+            _orig = Conn.handshake
+            async def _wrap(self, *args, _orig=_orig, **kwargs):
+                try:
+                    return await _orig(self, *args, **kwargs)
+                except InvalidMessage as e:
+                    msg = str(e)
+                    if _is_wrong_method(e):
+                        _send_400_and_close(getattr(self, "transport", None))
+                        log.warning("Rejected: WebSocket handshake requires GET (got POST or other).")
+                        return
+                    if _is_http10_error(e):
+                        _reject_and_raise(getattr(self, "transport", None))
+                    raise
+            Conn.handshake = _wrap
+            patched = True
+            log.info("WebSocket: HTTP/1.0 rejection handler installed (ServerConnection)")
+    except (ImportError, AttributeError):
+        pass
+    if patched:
+        return
+    try:
+        from websockets.legacy import server as ws_legacy
+        Conn = getattr(ws_legacy, "ServerConnection", None) or getattr(ws_legacy, "WebSocketServerProtocol", None)
+        if Conn and hasattr(Conn, "handshake"):
+            _orig = Conn.handshake
+            async def _wrap(self, *args, _orig=_orig, **kwargs):
+                try:
+                    return await _orig(self, *args, **kwargs)
+                except InvalidMessage as e:
+                    if _is_wrong_method(e):
+                        _send_400_and_close(getattr(self, "transport", None))
+                        log.warning("Rejected: WebSocket handshake requires GET (got POST or other).")
+                        return
+                    if _is_http10_error(e):
+                        _reject_and_raise(getattr(self, "transport", None))
+                    raise
+            Conn.handshake = _wrap
+            patched = True
+            log.info("WebSocket: HTTP/1.0 rejection handler installed (legacy)")
+    except (ImportError, AttributeError):
+        pass
+
+    # Fallback: websockets <13 or different layout — ServerProtocol.handshake
+    if not patched:
+        try:
+            from websockets import server as ws_server
+            if hasattr(ws_server.ServerProtocol, "handshake"):
+                _orig = ws_server.ServerProtocol.handshake
+                async def _wrap_proto(self, *args, **kwargs):
+                    try:
+                        return await _orig(self, *args, **kwargs)
+                    except InvalidMessage as e:
+                        if _is_http10_error(e):
+                            _reject_and_raise(getattr(self, "transport", None))
+                        raise
+                ws_server.ServerProtocol.handshake = _wrap_proto
+                patched = True
+                log.info("WebSocket: HTTP/1.0 rejection handler installed (ServerProtocol)")
+        except Exception:
+            pass
+
+    if not patched:
+        log.debug("WebSocket: HTTP/1.0 rejection not installed (no handshake found); asyncio handler will log rejects")
+
+
+_install_http10_reject()
 
 # ─── Config ─────────────────────────────────────────────────────────────────
 HOST = os.environ.get("RDP_HOST", "0.0.0.0")
@@ -424,7 +558,27 @@ def _fix_connection_header(connection, request):
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────
+def _loop_exception_handler(loop, ctx):
+    from websockets.exceptions import InvalidMessage, InvalidHandshake
+    exc = ctx.get("exception")
+    msg = str(exc) if exc else ""
+    if isinstance(exc, InvalidHandshake) and ("Sec-WebSocket-Key" in msg or "Missing" in msg):
+        log.warning("WebSocket rejected: proxy must forward Sec-WebSocket-Key, Sec-WebSocket-Version, Upgrade, Connection. Run: sudo bash deploy-web.sh && sudo systemctl reload nginx")
+        return
+    if isinstance(exc, InvalidMessage) and ("expected GET" in msg or "unsupported HTTP method" in msg):
+        log.warning("Rejected: WebSocket handshake requires GET (got POST or other).")
+        return
+    if isinstance(exc, InvalidMessage) and ("expected HTTP/1.1" in msg or "unsupported protocol" in msg or "HTTP/1.0" in msg or "PRI " in msg or "HTTP/2.0" in msg or "did not receive a valid HTTP" in msg):
+        log.warning("Rejected invalid request (HTTP/1.0, HTTP/2, or bad). Use nginx with proxy_http_version 1.1.")
+        return
+    asyncio.default_exception_handler(loop, ctx)
+
+
 async def main():
+    try:
+        asyncio.get_running_loop().set_exception_handler(_loop_exception_handler)
+    except Exception:
+        pass
     log.info(f"Starting RemoteDesktop VPS server on {HOST}:{PORT}")
     
     ssl_ctx = None
@@ -462,4 +616,7 @@ async def main():
     await server.wait_closed()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        log.info("Server stopped (Ctrl+C)")
