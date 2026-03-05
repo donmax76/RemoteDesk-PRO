@@ -1,3 +1,0 @@
-D:/Android_Projects/TestApp/RemoteDesktop_P2P/NEW_RDP_Cloud/build/CMakeFiles/RemoteDesktopHost.dir
-D:/Android_Projects/TestApp/RemoteDesktop_P2P/NEW_RDP_Cloud/build/CMakeFiles/ALL_BUILD.dir
-D:/Android_Projects/TestApp/RemoteDesktop_P2P/NEW_RDP_Cloud/build/CMakeFiles/ZERO_CHECK.dir
