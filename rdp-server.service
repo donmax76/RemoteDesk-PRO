@@ -1,0 +1,21 @@
+[Unit]
+Description=RemoteDesktop VPS Relay Server
+After=network.target
+
+[Service]
+Type=simple
+User=rdp
+WorkingDirectory=/opt/rdp_server
+ExecStart=/opt/rdp_server/venv/bin/python server.py
+Restart=always
+RestartSec=5
+Environment=RDP_PORT=8080
+Environment=RDP_ADMIN_TOKEN=change-me
+# Optional SSL:
+# Environment=RDP_SSL_CERT=/etc/letsencrypt/live/yourdomain/fullchain.pem
+# Environment=RDP_SSL_KEY=/etc/letsencrypt/live/yourdomain/privkey.pem
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

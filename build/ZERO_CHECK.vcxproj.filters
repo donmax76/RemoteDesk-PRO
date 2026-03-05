@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="D:\Android_Projects\TestApp\RemoteDesktop_P2P\NEW_RDP_Cloud\build\CMakeFiles\18d5336063794aeb3f1afaa45f8e7d7f\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{3989FA21-C6AD-393E-B1C3-B25AC375790B}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
