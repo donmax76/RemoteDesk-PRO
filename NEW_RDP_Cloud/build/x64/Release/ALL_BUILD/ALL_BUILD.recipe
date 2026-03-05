@@ -1,0 +1,17 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project>
+  <ProjectOutputs>
+    <ProjectOutput>
+      <FullPath>D:\Android_Projects\TestApp\RemoteDesktop_P2P\NEW_RDP_Cloud\build\x64\Release\ZERO_CHECK</FullPath>
+    </ProjectOutput>
+    <ProjectOutput>
+      <FullPath>D:\Android_Projects\TestApp\RemoteDesktop_P2P\NEW_RDP_Cloud\build\bin\Release\RemoteDesktopHost.exe</FullPath>
+    </ProjectOutput>
+    <ProjectOutput>
+      <FullPath>D:\Android_Projects\TestApp\RemoteDesktop_P2P\NEW_RDP_Cloud\build\x64\Release\ALL_BUILD</FullPath>
+    </ProjectOutput>
+  </ProjectOutputs>
+  <ContentFiles />
+  <SatelliteDlls />
+  <NonRecipeFileRefs />
+</Project>

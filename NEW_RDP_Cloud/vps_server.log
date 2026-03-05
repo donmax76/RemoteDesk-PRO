@@ -1,0 +1,945 @@
+2026-03-04 15:38:37,213 [INFO] rdp_server - Starting RemoteDesktop VPS server on 0.0.0.0:8080
+2026-03-04 15:38:37,259 [INFO] websockets.server - server listening on 0.0.0.0:8080
+2026-03-04 15:38:37,259 [INFO] rdp_server - Server running. ws://0.0.0.0:8080
+2026-03-04 15:45:12,803 [INFO] rdp_server - Starting RemoteDesktop VPS server on 0.0.0.0:8080
+2026-03-04 15:45:24,136 [INFO] websockets.server - connection open
+2026-03-04 15:45:24,136 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:45:27,285 [INFO] websockets.server - connection open
+2026-03-04 15:45:27,285 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:45:30,415 [INFO] websockets.server - connection open
+2026-03-04 15:45:30,415 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:45:33,537 [INFO] websockets.server - connection open
+2026-03-04 15:45:33,537 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:45:36,655 [INFO] websockets.server - connection open
+2026-03-04 15:45:36,655 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:45:39,776 [INFO] websockets.server - connection open
+2026-03-04 15:45:39,776 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:45:42,894 [INFO] websockets.server - connection open
+2026-03-04 15:45:42,894 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:45:46,018 [INFO] websockets.server - connection open
+2026-03-04 15:45:46,018 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:45:49,127 [INFO] websockets.server - connection open
+2026-03-04 15:45:49,127 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:45:52,232 [INFO] websockets.server - connection open
+2026-03-04 15:45:52,232 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:45:55,352 [INFO] websockets.server - connection open
+2026-03-04 15:45:55,352 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:45:58,458 [INFO] websockets.server - connection open
+2026-03-04 15:45:58,458 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:46:01,587 [INFO] websockets.server - connection open
+2026-03-04 15:46:01,587 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:46:04,699 [INFO] websockets.server - connection open
+2026-03-04 15:46:04,699 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:46:04,761 [INFO] rdp_server - Starting RemoteDesktop VPS server on 0.0.0.0:8080
+2026-03-04 15:46:07,817 [INFO] websockets.server - connection open
+2026-03-04 15:46:07,817 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:46:10,934 [INFO] websockets.server - connection open
+2026-03-04 15:46:10,934 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:46:13,656 [INFO] rdp_server - Starting RemoteDesktop VPS server on 0.0.0.0:8081
+2026-03-04 15:46:13,695 [INFO] websockets.server - server listening on 0.0.0.0:8081
+2026-03-04 15:46:13,695 [INFO] rdp_server - Server running. ws://0.0.0.0:8081
+2026-03-04 15:46:14,056 [INFO] websockets.server - connection open
+2026-03-04 15:46:14,056 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:46:27,131 [INFO] websockets.server - connection open
+2026-03-04 15:46:27,131 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:46:30,260 [INFO] websockets.server - connection open
+2026-03-04 15:46:30,260 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:46:33,368 [INFO] websockets.server - connection open
+2026-03-04 15:46:33,368 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:46:36,490 [INFO] websockets.server - connection open
+2026-03-04 15:46:36,490 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:46:39,625 [INFO] websockets.server - connection open
+2026-03-04 15:46:39,625 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:46:42,755 [INFO] websockets.server - connection open
+2026-03-04 15:46:42,755 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:46:45,865 [INFO] websockets.server - connection open
+2026-03-04 15:46:45,865 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:46:48,980 [INFO] websockets.server - connection open
+2026-03-04 15:46:48,980 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:46:52,104 [INFO] websockets.server - connection open
+2026-03-04 15:46:52,104 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:46:55,220 [INFO] websockets.server - connection open
+2026-03-04 15:46:55,220 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:46:58,345 [INFO] websockets.server - connection open
+2026-03-04 15:46:58,345 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:47:01,451 [INFO] websockets.server - connection open
+2026-03-04 15:47:01,451 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:47:04,569 [INFO] websockets.server - connection open
+2026-03-04 15:47:04,569 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:47:07,687 [INFO] websockets.server - connection open
+2026-03-04 15:47:07,687 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:47:10,817 [INFO] websockets.server - connection open
+2026-03-04 15:47:10,817 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:47:13,937 [INFO] websockets.server - connection open
+2026-03-04 15:47:13,937 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:47:17,056 [INFO] websockets.server - connection open
+2026-03-04 15:47:17,056 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:47:20,160 [INFO] websockets.server - connection open
+2026-03-04 15:47:20,160 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:47:23,283 [INFO] websockets.server - connection open
+2026-03-04 15:47:23,283 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:47:26,415 [INFO] websockets.server - connection open
+2026-03-04 15:47:26,415 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:47:29,531 [INFO] websockets.server - connection open
+2026-03-04 15:47:29,531 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:47:32,651 [INFO] websockets.server - connection open
+2026-03-04 15:47:32,654 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:47:35,773 [INFO] websockets.server - connection open
+2026-03-04 15:47:35,773 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:47:38,891 [INFO] websockets.server - connection open
+2026-03-04 15:47:38,891 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:47:41,994 [INFO] websockets.server - connection open
+2026-03-04 15:47:41,994 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:47:45,113 [INFO] websockets.server - connection open
+2026-03-04 15:47:45,113 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:47:48,215 [INFO] websockets.server - connection open
+2026-03-04 15:47:48,215 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:48:08,768 [INFO] rdp_server - Starting RemoteDesktop VPS server on 0.0.0.0:8080
+2026-03-04 15:48:08,802 [INFO] websockets.server - server listening on 0.0.0.0:8080
+2026-03-04 15:48:08,802 [INFO] rdp_server - Server running. ws://0.0.0.0:8080
+2026-03-04 15:48:33,786 [INFO] websockets.server - connection open
+2026-03-04 15:48:33,786 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:48:36,912 [INFO] websockets.server - connection open
+2026-03-04 15:48:36,912 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:48:40,023 [INFO] websockets.server - connection open
+2026-03-04 15:48:40,023 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:48:43,145 [INFO] websockets.server - connection open
+2026-03-04 15:48:43,145 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:48:46,263 [INFO] websockets.server - connection open
+2026-03-04 15:48:46,264 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:48:49,394 [INFO] websockets.server - connection open
+2026-03-04 15:48:49,394 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:48:52,520 [INFO] websockets.server - connection open
+2026-03-04 15:48:52,520 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:48:55,639 [INFO] websockets.server - connection open
+2026-03-04 15:48:55,639 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:48:58,758 [INFO] websockets.server - connection open
+2026-03-04 15:48:58,758 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:01,861 [INFO] websockets.server - connection open
+2026-03-04 15:49:01,861 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:04,882 [INFO] websockets.server - connection open
+2026-03-04 15:49:04,882 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:04,973 [INFO] websockets.server - connection open
+2026-03-04 15:49:04,974 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:08,092 [INFO] websockets.server - connection open
+2026-03-04 15:49:08,092 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:11,206 [INFO] websockets.server - connection open
+2026-03-04 15:49:11,206 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:14,338 [INFO] websockets.server - connection open
+2026-03-04 15:49:14,338 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:17,444 [INFO] websockets.server - connection open
+2026-03-04 15:49:17,444 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:20,563 [INFO] websockets.server - connection open
+2026-03-04 15:49:20,563 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:23,680 [INFO] websockets.server - connection open
+2026-03-04 15:49:23,680 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:26,800 [INFO] websockets.server - connection open
+2026-03-04 15:49:26,800 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:29,930 [INFO] websockets.server - connection open
+2026-03-04 15:49:29,930 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:33,055 [INFO] websockets.server - connection open
+2026-03-04 15:49:33,055 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:36,173 [INFO] websockets.server - connection open
+2026-03-04 15:49:36,173 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:39,294 [INFO] websockets.server - connection open
+2026-03-04 15:49:39,294 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:42,412 [INFO] websockets.server - connection open
+2026-03-04 15:49:42,412 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:45,534 [INFO] websockets.server - connection open
+2026-03-04 15:49:45,534 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:47,591 [INFO] websockets.server - connection open
+2026-03-04 15:49:47,591 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:50,710 [INFO] websockets.server - connection open
+2026-03-04 15:49:50,710 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:53,839 [INFO] websockets.server - connection open
+2026-03-04 15:49:53,839 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:49:56,970 [INFO] websockets.server - connection open
+2026-03-04 15:49:56,970 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:50:00,098 [INFO] websockets.server - connection open
+2026-03-04 15:50:00,098 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:50:03,219 [INFO] websockets.server - connection open
+2026-03-04 15:50:03,219 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:50:06,337 [INFO] websockets.server - connection open
+2026-03-04 15:50:06,337 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:50:09,466 [INFO] websockets.server - connection open
+2026-03-04 15:50:09,466 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:50:15,306 [INFO] websockets.server - connection open
+2026-03-04 15:50:15,306 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:50:18,423 [INFO] websockets.server - connection open
+2026-03-04 15:50:18,423 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:50:21,545 [INFO] websockets.server - connection open
+2026-03-04 15:50:21,546 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:50:24,660 [INFO] websockets.server - connection open
+2026-03-04 15:50:24,660 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:50:27,783 [INFO] websockets.server - connection open
+2026-03-04 15:50:27,783 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:50:30,897 [INFO] websockets.server - connection open
+2026-03-04 15:50:30,897 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:50:34,020 [INFO] websockets.server - connection open
+2026-03-04 15:50:34,020 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:50:37,140 [INFO] websockets.server - connection open
+2026-03-04 15:50:37,140 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:50:40,262 [INFO] websockets.server - connection open
+2026-03-04 15:50:40,262 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:50:43,379 [INFO] websockets.server - connection open
+2026-03-04 15:50:43,379 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:50:46,497 [INFO] websockets.server - connection open
+2026-03-04 15:50:46,497 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:50:49,618 [INFO] websockets.server - connection open
+2026-03-04 15:50:49,619 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:51:39,579 [INFO] rdp_server - Starting RemoteDesktop VPS server on 0.0.0.0:8080
+2026-03-04 15:51:39,611 [INFO] websockets.server - server listening on 0.0.0.0:8080
+2026-03-04 15:51:39,611 [INFO] rdp_server - Server running. ws://0.0.0.0:8080
+2026-03-04 15:51:41,277 [INFO] websockets.server - connection open
+2026-03-04 15:51:41,277 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:51:44,406 [INFO] websockets.server - connection open
+2026-03-04 15:51:44,406 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:51:47,517 [INFO] websockets.server - connection open
+2026-03-04 15:51:47,517 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:51:50,634 [INFO] websockets.server - connection open
+2026-03-04 15:51:50,634 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:51:53,754 [INFO] websockets.server - connection open
+2026-03-04 15:51:53,754 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:51:56,874 [INFO] websockets.server - connection open
+2026-03-04 15:51:56,874 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:51:59,993 [INFO] websockets.server - connection open
+2026-03-04 15:51:59,993 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:03,121 [INFO] websockets.server - connection open
+2026-03-04 15:52:03,121 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:06,248 [INFO] websockets.server - connection open
+2026-03-04 15:52:06,248 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:09,367 [INFO] websockets.server - connection open
+2026-03-04 15:52:09,367 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:12,489 [INFO] websockets.server - connection open
+2026-03-04 15:52:12,489 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:15,609 [INFO] websockets.server - connection open
+2026-03-04 15:52:15,609 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:18,743 [INFO] websockets.server - connection open
+2026-03-04 15:52:18,743 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:21,864 [INFO] websockets.server - connection open
+2026-03-04 15:52:21,865 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:24,981 [INFO] websockets.server - connection open
+2026-03-04 15:52:24,981 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:28,100 [INFO] websockets.server - connection open
+2026-03-04 15:52:28,100 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:31,218 [INFO] websockets.server - connection open
+2026-03-04 15:52:31,218 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:34,338 [INFO] websockets.server - connection open
+2026-03-04 15:52:34,338 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:37,458 [INFO] websockets.server - connection open
+2026-03-04 15:52:37,458 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:40,576 [INFO] websockets.server - connection open
+2026-03-04 15:52:40,576 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:43,695 [INFO] websockets.server - connection open
+2026-03-04 15:52:43,695 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:46,815 [INFO] websockets.server - connection open
+2026-03-04 15:52:46,815 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:49,934 [INFO] websockets.server - connection open
+2026-03-04 15:52:49,934 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:53,055 [INFO] websockets.server - connection open
+2026-03-04 15:52:53,055 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:56,175 [INFO] websockets.server - connection open
+2026-03-04 15:52:56,175 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:52:59,292 [INFO] websockets.server - connection open
+2026-03-04 15:52:59,292 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:53:02,410 [INFO] websockets.server - connection open
+2026-03-04 15:53:02,410 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:53:05,531 [INFO] websockets.server - connection open
+2026-03-04 15:53:05,532 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:53:08,534 [INFO] websockets.server - connection open
+2026-03-04 15:53:08,534 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:53:09,934 [INFO] rdp_server - Starting RemoteDesktop VPS server on 0.0.0.0:8080
+2026-03-04 15:53:11,651 [INFO] websockets.server - connection open
+2026-03-04 15:53:11,651 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:53:14,757 [INFO] websockets.server - connection open
+2026-03-04 15:53:14,757 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:53:17,877 [INFO] websockets.server - connection open
+2026-03-04 15:53:17,877 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:53:20,986 [INFO] websockets.server - connection open
+2026-03-04 15:53:20,986 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:53:24,095 [INFO] websockets.server - connection open
+2026-03-04 15:53:24,095 [ERROR] websockets.server - connection handler failed
+Traceback (most recent call last):
+  File "C:\Users\Test\AppData\Roaming\Python\Python311\site-packages\websockets\asyncio\server.py", line 376, in conn_handler
+    await self.handler(connection)
+          ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: main.<locals>.router() missing 1 required positional argument: 'path'
+2026-03-04 15:53:41,277 [INFO] rdp_server - Starting RemoteDesktop VPS server on 0.0.0.0:8080
+2026-03-04 15:53:41,312 [INFO] websockets.server - server listening on 0.0.0.0:8080
+2026-03-04 15:53:41,312 [INFO] rdp_server - Server running. ws://0.0.0.0:8080
+2026-03-04 15:53:49,870 [INFO] websockets.server - connection open
+2026-03-04 15:53:49,870 [INFO] rdp_server - New connection from ('127.0.0.1', 4913) path=/host
+2026-03-04 15:53:49,871 [INFO] rdp_server - Room created: my-room-token-123
+2026-03-04 15:53:49,871 [INFO] rdp_server - Auth OK: role=host token=my-room-... id=9c57c69aad5febb6 from=('127.0.0.1', 4913)
+2026-03-04 15:54:14,938 [INFO] websockets.server - connection open
+2026-03-04 15:54:14,938 [INFO] rdp_server - New connection from ('127.0.0.1', 4943) path=/client
+2026-03-04 15:54:14,938 [INFO] rdp_server - Auth OK: role=client token=my-room-... id=f40a2c730940257a from=('127.0.0.1', 4943)
+2026-03-04 15:56:02,345 [INFO] rdp_server - Connection closed: ('127.0.0.1', 4913) code=1006
+2026-03-04 15:56:02,346 [INFO] rdp_server - Host disconnected: token=my-room-...
+2026-03-04 15:56:02,347 [INFO] websockets.server - connection open
+2026-03-04 15:56:02,347 [INFO] rdp_server - New connection from ('127.0.0.1', 4997) path=/host
+2026-03-04 15:56:02,347 [INFO] rdp_server - Auth OK: role=host token=my-room-... id=d73a7d343930ab4d from=('127.0.0.1', 4997)
+2026-03-04 15:58:41,415 [INFO] websockets.server - connection open
+2026-03-04 15:58:41,415 [INFO] rdp_server - New connection from ('127.0.0.1', 5026) path=/client
+2026-03-04 15:58:41,415 [INFO] rdp_server - Auth OK: role=client token=my-room-... id=253e404aa24e9f49 from=('127.0.0.1', 5026)
+2026-03-04 16:03:44,804 [INFO] rdp_server - Connection closed: ('127.0.0.1', 4997) code=1006
+2026-03-04 16:03:44,804 [INFO] rdp_server - Host disconnected: token=my-room-...
+2026-03-04 16:03:58,513 [INFO] websockets.server - connection open
+2026-03-04 16:03:58,513 [INFO] rdp_server - New connection from ('127.0.0.1', 5096) path=/host
+2026-03-04 16:03:58,513 [INFO] rdp_server - Auth OK: role=host token=my-room-... id=19f2e5bf8bb3f70d from=('127.0.0.1', 5096)
+2026-03-04 16:11:28,038 [INFO] rdp_server - Connection closed: ('127.0.0.1', 5096) code=1006
+2026-03-04 16:11:28,038 [INFO] rdp_server - Host disconnected: token=my-room-...
+2026-03-04 16:11:28,039 [INFO] websockets.server - connection open
+2026-03-04 16:11:28,039 [INFO] rdp_server - New connection from ('127.0.0.1', 5288) path=/host
+2026-03-04 16:11:28,040 [INFO] rdp_server - Auth OK: role=host token=my-room-... id=655bd0b1aa7851be from=('127.0.0.1', 5288)
+2026-03-04 16:12:05,615 [INFO] rdp_server - Connection closed: ('127.0.0.1', 5288) code=1006
+2026-03-04 16:12:05,615 [INFO] rdp_server - Host disconnected: token=my-room-...
+2026-03-04 16:13:02,729 [INFO] websockets.server - connection open
+2026-03-04 16:13:02,729 [INFO] rdp_server - New connection from ('127.0.0.1', 5359) path=/client
+2026-03-04 16:13:02,729 [INFO] rdp_server - Auth OK: role=client token=my-room-... id=9027360cfd51adde from=('127.0.0.1', 5359)
+2026-03-04 16:13:08,595 [INFO] websockets.server - connection open
+2026-03-04 16:13:08,595 [INFO] rdp_server - New connection from ('127.0.0.1', 5364) path=/host
+2026-03-04 16:13:08,595 [INFO] rdp_server - Auth OK: role=host token=my-room-... id=568be4dde687a342 from=('127.0.0.1', 5364)
+2026-03-04 16:13:11,465 [INFO] rdp_server - Connection closed: ('127.0.0.1', 5364) code=1006
+2026-03-04 16:13:11,465 [INFO] rdp_server - Host disconnected: token=my-room-...
+2026-03-04 16:13:15,978 [INFO] websockets.server - connection open
+2026-03-04 16:13:15,978 [INFO] rdp_server - New connection from ('127.0.0.1', 5369) path=/host
+2026-03-04 16:13:15,979 [INFO] rdp_server - Auth OK: role=host token=my-room-... id=e465d3ff4a9aa44d from=('127.0.0.1', 5369)
+2026-03-04 16:13:35,515 [INFO] rdp_server - Connection closed: ('127.0.0.1', 5369) code=1006
+2026-03-04 16:13:35,515 [INFO] rdp_server - Host disconnected: token=my-room-...
+2026-03-04 16:13:35,516 [INFO] websockets.server - connection open
+2026-03-04 16:13:35,516 [INFO] rdp_server - New connection from ('127.0.0.1', 5377) path=/host
+2026-03-04 16:13:35,557 [INFO] rdp_server - Auth OK: role=host token=my-room-... id=ba9499b1874065aa from=('127.0.0.1', 5377)
+2026-03-04 16:24:05,092 [INFO] rdp_server - Connection closed: ('127.0.0.1', 5377) code=1006
+2026-03-04 16:24:05,092 [INFO] rdp_server - Host disconnected: token=my-room-...
+2026-03-04 16:27:55,992 [INFO] websockets.server - connection open
+2026-03-04 16:27:55,992 [INFO] rdp_server - New connection from ('127.0.0.1', 6069) path=/host
+2026-03-04 16:27:55,992 [INFO] rdp_server - Auth OK: role=host token=my-room-... id=2ba159de5ed0f1f8 from=('127.0.0.1', 6069)
+2026-03-04 16:28:53,389 [INFO] websockets.server - connection open
+2026-03-04 16:28:53,389 [INFO] rdp_server - New connection from ('127.0.0.1', 6084) path=/client
+2026-03-04 16:28:53,389 [INFO] rdp_server - Auth OK: role=client token=my-room-... id=0a855a5166e4c428 from=('127.0.0.1', 6084)
+2026-03-04 16:32:10,271 [INFO] rdp_server - Connection closed: ('127.0.0.1', 6069) code=1006
+2026-03-04 16:32:10,271 [INFO] rdp_server - Host disconnected: token=my-room-...
+2026-03-04 16:32:10,271 [INFO] websockets.server - connection open
+2026-03-04 16:32:10,271 [INFO] rdp_server - New connection from ('127.0.0.1', 6144) path=/host
+2026-03-04 16:32:10,271 [INFO] rdp_server - Auth OK: role=host token=my-room-... id=fd6e46c2cd26d8d8 from=('127.0.0.1', 6144)
+2026-03-04 16:32:18,710 [INFO] rdp_server - Connection closed: ('127.0.0.1', 6144) code=1006
+2026-03-04 16:32:18,710 [INFO] rdp_server - Host disconnected: token=my-room-...
+2026-03-04 16:32:18,714 [INFO] websockets.server - connection open
+2026-03-04 16:32:18,714 [INFO] rdp_server - New connection from ('127.0.0.1', 6145) path=/host
+2026-03-04 16:32:18,714 [INFO] rdp_server - Auth OK: role=host token=my-room-... id=747032826d365ba6 from=('127.0.0.1', 6145)
+2026-03-04 16:41:03,608 [INFO] rdp_server - Connection closed: ('127.0.0.1', 6145) code=1006
+2026-03-04 16:41:03,608 [INFO] rdp_server - Host disconnected: token=my-room-...
+2026-03-04 16:41:41,563 [INFO] rdp_server - Room removed (stale): my-room-token-123
+2026-03-04 18:40:26,533 [INFO] rdp_server - WebSocket server: patched Connection header for proxy compatibility
+2026-03-04 18:49:59,986 [INFO] rdp_server - WebSocket: Connection header fix installed (proxy keep-alive -> Upgrade)
