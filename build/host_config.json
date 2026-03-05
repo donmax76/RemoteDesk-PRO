@@ -1,5 +1,5 @@
 {
-    "server": "127.0.0.1",
+    "server": "YOUR_VPS_IP",
     "port": 8080,
     "token": "my-room-token-123",
     "password": "secret-password",
