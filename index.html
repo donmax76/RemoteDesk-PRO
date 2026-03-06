@@ -1355,7 +1355,7 @@ const state = {
   // Requests
   pendingReqs: {},
   reqIdCounter: 0,
-  pendingFileChunkResolve: null,
+  pendingFileChunkQueue: [],  // queue of {resolve, reject, timeoutId} for pipelined downloads
   // WebRTC: stream over UDP (separate from WebSocket used for files/commands)
   streamWs: null,         // separate WS for SCRN binary frames only
   streamDc: null,
@@ -1783,15 +1783,15 @@ function handleBinary(buf) {
   }
 
   if (sig === 'FILE') {
-    // File chunk response — resolve pending download promise if waiting
+    // File chunk response — resolve oldest pending download promise (FIFO queue for pipeline)
     const dv = new DataView(buf);
     const plen = dv.getUint16(4, true);
     const dataStart = 4 + 2 + plen + 8;
     const chunkData = dataStart < buf.byteLength ? buf.slice(dataStart) : new ArrayBuffer(0);
-    if (state.pendingFileChunkResolve) {
-      const { resolve, reject } = state.pendingFileChunkResolve;
-      state.pendingFileChunkResolve = null;
-      resolve(chunkData);
+    if (state.pendingFileChunkQueue.length > 0) {
+      const pending = state.pendingFileChunkQueue.shift();
+      if (pending.timeoutId) clearTimeout(pending.timeoutId);
+      pending.resolve(chunkData);
     } else {
       handleFileChunk(buf);
     }
@@ -2589,9 +2589,9 @@ async function copySelected() {
 }
 
 async function downloadFromHost(path, filename, silent) {
-  const CHUNK = 524288; // 512KB chunks (was 64KB - too small for large files)
-  let offset = 0;
-  const chunks = [];
+  const CHUNK = 1048576; // 1MB chunks for high throughput
+  const PIPELINE = 6;    // Number of in-flight requests (pipelining)
+  const CHUNK_TIMEOUT = 30000; // 30s timeout per chunk
   let bar = document.getElementById('fm-progress');
   path = normPath(path);
   if (!path) return;
@@ -2605,71 +2605,118 @@ async function downloadFromHost(path, filename, silent) {
     }
   } catch {}
 
-  const MAX_RETRIES = 3;
-  let consecutiveErrors = 0;
+  const chunks = [];
+  let receivedBytes = 0;
+  let nextSendOffset = 0;      // Next offset to request
+  let done = false;
+  let error = null;
+  const startTime = Date.now();
+  let lastProgressUpdate = 0;
 
-  while (true) {
+  // Helper: send one chunk request and return a promise for the response
+  function requestChunk(offset) {
+    return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        // Remove from queue on timeout
+        const idx = state.pendingFileChunkQueue.findIndex(p => p._offset === offset);
+        if (idx >= 0) state.pendingFileChunkQueue.splice(idx, 1);
+        reject(new Error('Chunk timeout at offset ' + offset));
+      }, CHUNK_TIMEOUT);
+      const entry = { resolve, reject, timeoutId, _offset: offset };
+      state.pendingFileChunkQueue.push(entry);
+      sendRaw(JSON.stringify({ cmd:'file_read_chunk', path, offset, length: CHUNK }));
+    });
+  }
+
+  // Update progress display
+  function updateProgress() {
+    const now = Date.now();
+    if (now - lastProgressUpdate < 150 && receivedBytes < totalSize) return; // Throttle UI updates
+    lastProgressUpdate = now;
+    if (totalSize > 0) {
+      const pct = Math.min(100, (receivedBytes / totalSize * 100));
+      bar.style.width = pct.toFixed(1) + '%';
+      if (!silent) {
+        const elapsed = (now - startTime) / 1000;
+        const speed = elapsed > 0.1 ? receivedBytes / elapsed : 0;
+        const remaining = speed > 0 ? (totalSize - receivedBytes) / speed : 0;
+        const status = document.getElementById('fm-status');
+        if (status) status.textContent =
+          `${filename}: ${formatBytes(receivedBytes)} / ${formatBytes(totalSize)} (${pct.toFixed(0)}%) \u2014 ${formatSpeed(speed)}, ETA ${formatETA(remaining)}`;
+      }
+    }
+  }
+
+  // Pipeline loop: keep PIPELINE requests in flight at all times
+  const inflight = [];
+
+  // Seed initial pipeline
+  const maxOffset = totalSize > 0 ? totalSize : Number.MAX_SAFE_INTEGER;
+  for (let i = 0; i < PIPELINE && nextSendOffset < maxOffset; i++) {
+    inflight.push({ offset: nextSendOffset, promise: requestChunk(nextSendOffset) });
+    nextSendOffset += CHUNK;
+  }
+
+  while (inflight.length > 0) {
+    const current = inflight.shift();
     let chunkData = null;
-    let lastErr = null;
-
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      chunkData = await current.promise;
+    } catch (e) {
+      // Retry once on failure
       try {
-        chunkData = await new Promise((resolve, reject) => {
-          state.pendingFileChunkResolve = { resolve, reject };
-          sendRaw(JSON.stringify({ cmd:'file_read_chunk', path: path, offset: offset, length: CHUNK }));
-          const timeoutId = setTimeout(() => {
-            if (state.pendingFileChunkResolve) {
-              state.pendingFileChunkResolve = null;
-              reject(new Error('Timeout'));
-            }
-          }, 60000); // 60s timeout per chunk
-          // Store timeout ID so we can clear it on success
-          const origResolve = state.pendingFileChunkResolve.resolve;
-          state.pendingFileChunkResolve.resolve = (data) => {
-            clearTimeout(timeoutId);
-            origResolve(data);
-          };
-        });
-        break; // Success - exit retry loop
-      } catch (e) {
-        lastErr = e;
-        if (attempt < MAX_RETRIES - 1) {
-          await new Promise(r => setTimeout(r, 500 * (attempt + 1))); // Backoff
-        }
+        chunkData = await requestChunk(current.offset);
+      } catch (e2) {
+        error = e2;
+        break;
       }
     }
 
     if (!chunkData || chunkData.byteLength === 0) {
-      // If we got 0 bytes but expected more (based on totalSize), it's an error
-      if (totalSize > 0 && offset < totalSize && consecutiveErrors < 2) {
-        consecutiveErrors++;
-        // Try again for this offset
-        continue;
+      // EOF or error — if we expected more data, retry
+      if (totalSize > 0 && current.offset + receivedBytes < totalSize * 0.95) {
+        // Try one more time
+        try {
+          chunkData = await requestChunk(current.offset);
+        } catch(_) {}
       }
-      break; // Real EOF or too many errors
+      if (!chunkData || chunkData.byteLength === 0) break;
     }
 
-    consecutiveErrors = 0;
     chunks.push(new Uint8Array(chunkData));
-    offset += chunkData.byteLength;
-    if (totalSize > 0) {
-      const pct = Math.min(100, (offset/totalSize*100));
-      bar.style.width = pct.toFixed(1)+'%';
-      if (!silent) {
-        const status = document.getElementById('fm-status');
-        if (status) status.textContent = `Downloading ${filename}: ${formatBytes(offset)} / ${formatBytes(totalSize)} (${pct.toFixed(0)}%)`;
+    receivedBytes += chunkData.byteLength;
+    updateProgress();
+
+    // If this chunk was smaller than requested, it's the last one
+    if (chunkData.byteLength < CHUNK) {
+      // Drain remaining inflight but don't send more
+      for (const rem of inflight) {
+        try { await rem.promise; } catch(_) {}
       }
+      inflight.length = 0;
+      break;
     }
-    if (chunkData.byteLength < CHUNK) break; // Last chunk
+
+    // Send next request to keep pipeline full
+    if (nextSendOffset < maxOffset) {
+      inflight.push({ offset: nextSendOffset, promise: requestChunk(nextSendOffset) });
+      nextSendOffset += CHUNK;
+    }
   }
+
+  // Clear any remaining pending items in queue (safety)
+  state.pendingFileChunkQueue.forEach(p => { if (p.timeoutId) clearTimeout(p.timeoutId); });
+  state.pendingFileChunkQueue = [];
 
   bar.style.width = '0%';
 
-  // Validate downloaded size
+  // Final stats
   const total = chunks.reduce((a, c) => a + c.length, 0);
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  const avgSpeed = elapsed > 0 ? total / parseFloat(elapsed) : 0;
+
   if (totalSize > 0 && total < totalSize * 0.95) {
-    // Downloaded significantly less than expected
-    notify(`Warning: ${filename} — expected ${formatBytes(totalSize)}, got ${formatBytes(total)}`, 'warn');
+    notify(`${filename} \u2014 ${formatBytes(totalSize)} expected, ${formatBytes(total)} received`, 'warn');
   }
 
   const merged = new Uint8Array(total);
@@ -2677,12 +2724,13 @@ async function downloadFromHost(path, filename, silent) {
   chunks.forEach(c => { merged.set(c, pos); pos += c.length; });
 
   const blob = new Blob([merged]);
+  const doneMsg = `${filename} (${formatBytes(total)}) \u2014 ${elapsed}s, ${formatSpeed(avgSpeed)}`;
   const saveViaLink = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = filename; a.click();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
-    if (!silent) notify(`Downloaded: ${filename} (${formatBytes(total)})`, 'success');
+    if (!silent) notify(doneMsg, 'success');
   };
   if (state.downloadDirHandle && typeof state.downloadDirHandle.getFileHandle === 'function') {
     try {
@@ -2690,9 +2738,9 @@ async function downloadFromHost(path, filename, silent) {
       const w = await handle.createWritable();
       await w.write(blob);
       await w.close();
-      if (!silent) notify(`Saved to folder "${state.downloadDirHandle.name}": ${filename} (${formatBytes(total)})`, 'success');
+      if (!silent) notify(`\u2192 "${state.downloadDirHandle.name}": ${doneMsg}`, 'success');
     } catch (e) {
-      if (!silent) notify('Save to folder failed: ' + (e.message || e) + ' — using download', 'warn');
+      if (!silent) notify('Save to folder failed: ' + (e.message || e), 'warn');
       saveViaLink();
     }
   } else if (typeof window.showSaveFilePicker === 'function' && window.isSecureContext && !silent) {
@@ -2701,12 +2749,17 @@ async function downloadFromHost(path, filename, silent) {
       const w = await handle.createWritable();
       await w.write(blob);
       await w.close();
-      notify('Saved: ' + handle.name + ' (' + formatBytes(total) + ')', 'success');
+      notify(handle.name + ' \u2014 ' + doneMsg, 'success');
     } catch (e) {
       if (e.name !== 'AbortError') saveViaLink();
     }
   } else {
     saveViaLink();
+  }
+  // Clear status
+  if (!silent) {
+    const status = document.getElementById('fm-status');
+    if (status) status.textContent = '';
   }
 }
 
@@ -2733,20 +2786,23 @@ async function handleUpload(input) {
   const files = Array.from(input.files);
   if (!files.length) return;
   const bar = document.getElementById('fm-progress');
-  
+  const status = document.getElementById('fm-status');
+
   for (const file of files) {
-    notify(`Uploading: ${file.name}`, 'info');
+    notify(`Uploading: ${file.name} (${formatBytes(file.size)})`, 'info');
     const path = state.currentPath + '\\' + file.name;
-    const CHUNK = 65536;
+    const CHUNK = 524288; // 512KB chunks (was 64KB)
     let offset = 0;
     const reader = new FileReader();
-    
+    const startTime = Date.now();
+    let lastProgressUpdate = 0;
+
     while (offset < file.size) {
       const slice = file.slice(offset, offset + CHUNK);
       const arrBuf = await new Promise(r => { reader.onload = e => r(e.target.result); reader.readAsArrayBuffer(slice); });
       const arr = new Uint8Array(arrBuf);
       const last = (offset + arr.length) >= file.size;
-      
+
       // Build WCHK message
       const pathBytes = new TextEncoder().encode(path);
       const msg = new Uint8Array(4 + 1 + 2 + pathBytes.length + 8 + arr.length);
@@ -2758,14 +2814,28 @@ async function handleUpload(input) {
       dv.setBigUint64(7 + pathBytes.length, BigInt(offset), true);
       msg.set(arr, 7 + pathBytes.length + 8);
       sendRaw(msg.buffer);
-      
+
       offset += arr.length;
-      bar.style.width = Math.min(100, (offset/file.size*100)).toFixed(1)+'%';
-      await new Promise(r => setTimeout(r, 5));
+      const now = Date.now();
+      if (now - lastProgressUpdate > 150 || last) {
+        lastProgressUpdate = now;
+        const pct = Math.min(100, (offset / file.size * 100));
+        bar.style.width = pct.toFixed(1) + '%';
+        const elapsed = (now - startTime) / 1000;
+        const speed = elapsed > 0.1 ? offset / elapsed : 0;
+        const remaining = speed > 0 ? (file.size - offset) / speed : 0;
+        if (status) status.textContent =
+          `\u2191 ${file.name}: ${formatBytes(offset)} / ${formatBytes(file.size)} (${pct.toFixed(0)}%) \u2014 ${formatSpeed(speed)}, ETA ${formatETA(remaining)}`;
+      }
+      // Yield to event loop every 2MB to avoid blocking UI
+      if (offset % (CHUNK * 4) === 0) await new Promise(r => setTimeout(r, 0));
     }
     bar.style.width = '0%';
-    notify(`Uploaded: ${file.name}`, 'success');
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const avgSpeed = elapsed > 0 ? file.size / parseFloat(elapsed) : 0;
+    notify(`\u2191 ${file.name} (${formatBytes(file.size)}) \u2014 ${elapsed}s, ${formatSpeed(avgSpeed)}`, 'success');
   }
+  if (status) status.textContent = '';
   input.value = '';
   refreshFiles();
 }
@@ -3185,6 +3255,17 @@ function formatBytes(b) {
   if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
   if (b < 1073741824) return (b/1048576).toFixed(1) + ' MB';
   return (b/1073741824).toFixed(2) + ' GB';
+}
+function formatSpeed(bytesPerSec) {
+  if (bytesPerSec <= 0) return '-- MB/s';
+  if (bytesPerSec < 1048576) return (bytesPerSec/1024).toFixed(0) + ' KB/s';
+  return (bytesPerSec/1048576).toFixed(1) + ' MB/s';
+}
+function formatETA(seconds) {
+  if (!seconds || seconds <= 0 || !isFinite(seconds)) return '--:--';
+  seconds = Math.ceil(seconds);
+  if (seconds > 3600) return Math.floor(seconds/3600) + ':' + String(Math.floor((seconds%3600)/60)).padStart(2,'0') + ':' + String(seconds%60).padStart(2,'0');
+  return Math.floor(seconds/60) + ':' + String(seconds%60).padStart(2,'0');
 }
 
 function getFileIcon(name) {
