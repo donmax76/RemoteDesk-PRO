@@ -240,7 +240,7 @@ SSL_KEY  = os.environ.get("RDP_SSL_KEY", "")
 @dataclass
 class Connection:
     ws: object
-    role: str           # "host" | "client" | "stream"
+    role: str           # "host" | "client" | "stream" | "host_stream"
     token: str
     user_id: str = ""
     remote: str = ""
@@ -256,6 +256,7 @@ class Room:
     host: Optional[Connection] = None
     clients: Dict[str, Connection] = field(default_factory=dict)
     stream_clients: Dict[str, Connection] = field(default_factory=dict)  # SCRN-only connections
+    host_streams: Dict[str, Connection] = field(default_factory=dict)  # host_stream connections (SCRN senders)
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     frame_count: int = 0
@@ -356,7 +357,7 @@ async def handler(websocket, path: str):
             await websocket.send(make_error("Missing token"))
             return
         
-        if role not in ("host", "client", "stream"):
+        if role not in ("host", "client", "stream", "host_stream"):
             await websocket.send(make_error("Invalid role"))
             return
         
@@ -365,9 +366,9 @@ async def handler(websocket, path: str):
         except ValueError as e:
             await websocket.send(make_error(str(e)))
             return
-        
-        # Password check for clients and stream connections
-        if role in ("client", "stream"):
+
+        # Password check for clients, stream, and host_stream connections
+        if role in ("client", "stream", "host_stream"):
             if not check_password(password, room.password_hash):
                 await websocket.send(make_error("Wrong password"))
                 log.warning(f"Auth failed from {remote} (wrong password)")
@@ -396,6 +397,8 @@ async def handler(websocket, path: str):
                         await old_host.ws.close()
                     except:
                         pass
+            elif role == "host_stream":
+                room.host_streams[user_id] = conn
             elif role == "stream":
                 room.stream_clients[user_id] = conn
             else:
@@ -436,13 +439,14 @@ async def handler(websocket, path: str):
                         room.host.bytes_sent += len(raw_msg)
                     except:
                         log.warning(f"Failed to forward binary to host")
-                elif role == "host":
+                elif role == "host" or role == "host_stream":
                     if len(raw_msg) >= 4 and raw_msg[:4] == b'SCRN':
                         # SCRN frames → ONLY to stream_clients, NOT to command clients
                         # Fire-and-forget: never blocks the host handler
                         enqueue_scrn_to_stream_clients(room, raw_msg)
-                    else:
+                    elif role == "host":
                         # FILE chunks → route to specific client if we have a pending target
+                        # (host_stream only sends SCRN, never FILE chunks)
                         target = room._pending_binary_target
                         room._pending_binary_target = ""
                         if target and target in room.clients:
@@ -458,8 +462,8 @@ async def handler(websocket, path: str):
             else:
                 # Text JSON: route by role
                 conn.bytes_recv += len(raw_msg.encode())
-                if role == "stream":
-                    continue  # stream connections are receive-only
+                if role in ("stream", "host_stream"):
+                    continue  # stream and host_stream connections are binary-only
                 try:
                     msg = json.loads(raw_msg)
                 except:
@@ -506,6 +510,9 @@ async def handler(websocket, path: str):
                 if conn.role == "host" and room.host is conn:
                     room.host = None
                     log.info(f"Host disconnected: token={token[:8]}...")
+                elif conn.role == "host_stream":
+                    room.host_streams.pop(conn.user_id, None)
+                    log.info(f"Host stream disconnected: id={conn.user_id}")
                 elif conn.role == "client":
                     room.clients.pop(conn.user_id, None)
                 elif conn.role == "stream":

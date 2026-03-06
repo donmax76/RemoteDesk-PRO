@@ -135,7 +135,7 @@ public:
     }
 
 private:
-    static const size_t kMaxNormalQueue = 4;
+    static const size_t kMaxNormalQueue = 2;
     static const int kPingIntervalSec = 30;
 
     struct Outgoing {
