@@ -439,8 +439,8 @@ async def handler(websocket, path: str):
                 elif role == "host":
                     if len(raw_msg) >= 4 and raw_msg[:4] == b'SCRN':
                         # SCRN frames → ONLY to stream_clients, NOT to command clients
-                        room.frame_count += 1
-                        await broadcast_scrn_to_stream_clients(room, raw_msg)
+                        # Fire-and-forget: never blocks the host handler
+                        enqueue_scrn_to_stream_clients(room, raw_msg)
                     else:
                         # FILE chunks → route to specific client if we have a pending target
                         target = room._pending_binary_target
@@ -533,27 +533,46 @@ async def broadcast_to_clients(room: Room, msg):
     for uid in dead:
         room.clients.pop(uid, None)
 
-async def broadcast_scrn_to_stream_clients(room: Room, frame: bytes):
-    """Send SCRN binary frames only to stream-dedicated connections.
-    Uses asyncio.wait_for with a timeout to prevent slow clients from blocking the host."""
-    dead = []
+def enqueue_scrn_to_stream_clients(room: Room, frame: bytes):
+    """Fire-and-forget SCRN frame to all stream clients.
+    Each client has a single-slot latest frame — old frames are dropped automatically.
+    This NEVER blocks the host handler, preventing backpressure."""
+    if not room.stream_clients:
+        return
+    room.frame_count += 1
     for uid, c in list(room.stream_clients.items()):
-        try:
-            await asyncio.wait_for(c.ws.send(frame), timeout=2.0)
-            c.bytes_sent += len(frame)
-        except asyncio.TimeoutError:
-            log.warning(f"Stream client {uid} too slow, dropping")
-            dead.append(uid)
-        except:
-            dead.append(uid)
-    for uid in dead:
-        room.stream_clients.pop(uid, None)
-        try:
-            c = room.stream_clients.get(uid)
-            if c:
-                await c.ws.close()
-        except:
-            pass
+        # Store latest frame for this client; sender task picks it up
+        c._latest_frame = frame
+        c.bytes_sent += len(frame)
+        # Start sender task if not already running
+        if not getattr(c, '_sender_task', None) or c._sender_task.done():
+            c._sender_task = asyncio.create_task(_stream_sender(room, uid, c))
+
+
+async def _stream_sender(room: Room, uid: str, conn: Connection):
+    """Per-client sender coroutine: sends the latest SCRN frame, drops stale ones."""
+    try:
+        while uid in room.stream_clients:
+            frame = getattr(conn, '_latest_frame', None)
+            if frame is None:
+                await asyncio.sleep(0.01)
+                continue
+            conn._latest_frame = None  # Consume — if a newer frame arrives, it overwrites
+            try:
+                await conn.ws.send(frame)
+            except Exception:
+                break
+    except Exception:
+        pass
+    finally:
+        # Clean up dead client
+        if uid in room.stream_clients:
+            room.stream_clients.pop(uid, None)
+            log.info(f"Stream client {uid} removed (send failed)")
+            try:
+                await conn.ws.close()
+            except Exception:
+                pass
 
 # ─── Stats endpoint ──────────────────────────────────────────────────────────
 async def stats_handler(websocket, path: str):
