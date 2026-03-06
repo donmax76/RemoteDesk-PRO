@@ -107,17 +107,26 @@ static void recording_write_frame(const std::vector<uint8_t>& frame_data) {
 // Sends frames via queue (non-blocking). Sender thread does actual I/O so this loop never blocks on send.
 static void stream_loop() {
     g_log.info("Stream thread started");
-    const int target_fps = std::max(5, std::min(60, g_fps));
-    const auto frame_dur = std::chrono::milliseconds(1000 / target_fps);
+    int consecutive_failures = 0;
 
     while (g_streaming && g_running) {
+        // Re-read target FPS each iteration (user can change it at runtime)
+        const int target_fps = std::max(5, std::min(60, g_fps));
+        const auto frame_dur = std::chrono::milliseconds(1000 / target_fps);
         auto t0 = std::chrono::steady_clock::now();
+
         try {
             ScreenCapture::Frame fr;
             if (!g_screen.capture(fr) || fr.jpeg_data.empty()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                consecutive_failures++;
+                // Adaptive backoff: wait longer on consecutive failures
+                // This handles the case when DXGI is being reinitialized
+                int wait_ms = std::min(2 + consecutive_failures * 5, 200);
+                std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
                 continue;
             }
+            consecutive_failures = 0; // Reset on successful capture
+
             if (!g_streaming || !g_running) break;
             std::vector<uint8_t> msg;
             msg.reserve(12 + fr.jpeg_data.size());
@@ -136,6 +145,8 @@ static void stream_loop() {
             if (g_recording) recording_write_frame(fr.jpeg_data);
         } catch (const std::exception& e) {
             g_log.error("Stream error: " + std::string(e.what()));
+            consecutive_failures++;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         auto elapsed = std::chrono::steady_clock::now() - t0;
         if (elapsed < frame_dur) {
@@ -321,11 +332,13 @@ static void handle_command(const std::string& msg_str) {
             std::string path   = json_get(msg_str, "path");
             std::string off_s  = json_get(msg_str, "offset");
             std::string len_s  = json_get(msg_str, "length");
+            std::string from   = json_get(msg_str, "_from"); // client routing id
             uint64_t offset = off_s.empty() ? 0 : std::stoull(off_s);
-            uint32_t length = len_s.empty() ? 65536 : std::stoul(len_s);
-            
+            uint32_t length = len_s.empty() ? 524288 : std::stoul(len_s); // Default 512KB
+            if (length > 4 * 1024 * 1024) length = 4 * 1024 * 1024; // Max 4MB per chunk
+
             std::vector<uint8_t> chunk = g_files.read_file_chunk(path, offset, length);
-            
+
             // Send as binary: "FILE" + path_len(2) + path + offset(8) + chunk_data
             std::vector<uint8_t> bin;
             bin.reserve(16 + path.size() + chunk.size());
@@ -336,6 +349,13 @@ static void handle_command(const std::string& msg_str) {
             bin.insert(bin.end(), path.begin(), path.end());
             bin.insert(bin.end(), reinterpret_cast<const uint8_t*>(&offset), reinterpret_cast<const uint8_t*>(&offset)+8);
             bin.insert(bin.end(), chunk.begin(), chunk.end());
+
+            // If we know who requested it, send a routing hint so the relay
+            // can forward to that specific client instead of broadcasting
+            if (!from.empty()) {
+                std::string route = "{\"_route_binary_to\":\"" + json_escape(from) + "\"}";
+                g_ws->send_text(route);
+            }
             g_ws->send_binary_priority(bin);
         }
         else if (cmd == "file_write_chunk") {
@@ -661,7 +681,11 @@ int main(int argc, char** argv) {
         if (!g_running) break;
 
         g_streaming = false;
-        if (g_stream_thread.joinable()) g_stream_thread.join();
+        // Detach stream thread so it doesn't block reconnect loop —
+        // it will exit on its own when g_streaming=false and g_running=false
+        if (g_stream_thread.joinable()) {
+            g_stream_thread.detach();
+        }
 
         g_log.info("Reconnecting in " + std::to_string(reconnect_delay) + "s...");
         std::this_thread::sleep_for(std::chrono::seconds(reconnect_delay));

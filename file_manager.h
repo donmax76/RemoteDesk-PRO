@@ -11,29 +11,53 @@ public:
 
         bool first = true;
         std::error_code ec;
-        for (auto& entry : fs::directory_iterator(path, ec)) {
-            if (ec) break;
+        // Use skip_permission_denied to avoid crashing on protected dirs
+        for (auto& entry : fs::directory_iterator(path,
+                fs::directory_options::skip_permission_denied, ec)) {
+            if (ec) { ec.clear(); continue; }
             try {
                 std::string name = entry.path().filename().string();
-                bool is_dir = entry.is_directory(ec);
-                int64_t size = is_dir ? 0 : (int64_t)entry.file_size(ec);
-                auto ftime = entry.last_write_time(ec);
+                std::error_code ec2;
+                bool is_dir = entry.is_directory(ec2);
+                int64_t size = 0;
+                if (!is_dir) {
+                    size = (int64_t)entry.file_size(ec2);
+                    if (ec2) size = 0;
+                }
+                auto ftime = entry.last_write_time(ec2);
+                // Convert file_time to Unix timestamp (seconds since 1970)
+                // Windows file_clock epoch is 1601-01-01; offset to Unix epoch = 11644473600s
                 int64_t mtime = 0;
-                if (!ec) {
-#if defined(_WIN32) && !defined(__clang__)
-                    auto duration = ftime.time_since_epoch();
-                    mtime = std::chrono::duration_cast<std::chrono::seconds>(duration).count();
+                if (!ec2) {
+                    auto dur = ftime.time_since_epoch();
+                    int64_t ticks = std::chrono::duration_cast<std::chrono::seconds>(dur).count();
+#ifdef _WIN32
+                    // file_clock on MSVC counts from 1601-01-01 in 100ns ticks as duration
+                    // In C++20 MSVC std::filesystem::file_time_type epoch == Windows FILETIME epoch
+                    // Convert to Unix: subtract 11644473600 seconds
+                    mtime = ticks - 11644473600LL;
 #else
-                    auto sctp = std::chrono::time_point_cast<std::chrono::seconds>(
-                        std::chrono::file_clock::to_sys(ftime));
-                    mtime = sctp.time_since_epoch().count();
+                    mtime = ticks;
 #endif
+                    if (mtime < 0) mtime = 0;
+                }
+                // Format as readable date string for the web client
+                char date_buf[32] = "—";
+                if (mtime > 0) {
+                    time_t t = (time_t)mtime;
+                    std::tm tm_buf{};
+#ifdef _WIN32
+                    gmtime_s(&tm_buf, &t);
+#else
+                    gmtime_r(&t, &tm_buf);
+#endif
+                    std::strftime(date_buf, sizeof(date_buf), "%Y-%m-%d %H:%M", &tm_buf);
                 }
                 if (!first) json << ",";
                 json << "{\"name\":\"" << json_escape(name) << "\""
                      << ",\"type\":\"" << (is_dir?"dir":"file") << "\""
                      << ",\"size\":" << size
-                     << ",\"modified\":" << mtime << "}";
+                     << ",\"modified\":\"" << date_buf << "\"}";
                 first = false;
             } catch(...) {}
         }
@@ -75,15 +99,20 @@ public:
         return true;
     }
 
-    // Write file chunk
+    // Write file chunk. 'last' = true when this is the final chunk (passed from WCHK binary protocol).
+    // Offset==0 and any chunk: create/truncate if new file; seek to offset otherwise.
     static bool write_chunk(const std::string& path, const uint8_t* data, size_t len,
-                            size_t offset, bool create_new)
+                            size_t offset, bool last)
     {
         std::error_code ec;
         fs::create_directories(fs::path(path).parent_path(), ec);
-        auto mode = std::ios::binary | (create_new ? std::ios::trunc : std::ios::in|std::ios::out);
-        std::fstream f(path, mode);
-        if (!f && create_new) f.open(path, std::ios::binary|std::ios::out);
+        // Open for random write; create if not exists
+        std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
+        if (!f) {
+            // File doesn't exist yet — create it
+            f.clear();
+            f.open(path, std::ios::binary | std::ios::out | std::ios::trunc);
+        }
         if (!f) return false;
         f.seekp((std::streamoff)offset);
         f.write((const char*)data, len);

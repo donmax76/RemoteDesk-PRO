@@ -115,7 +115,9 @@ inline std::string json_get(const std::string& json, const std::string& key) {
     if (pos >= json.size()) return "";
     if (json[pos] == '"') {
         auto end = json.find('"', pos+1);
-        while (end != std::string::npos && json[end-1]=='\\') end = json.find('"', end+1);
+        // Skip escaped quotes (check end > 0 to avoid underflow)
+        while (end != std::string::npos && end > 0 && json[end-1]=='\\')
+            end = json.find('"', end+1);
         if (end == std::string::npos) return "";
         return json.substr(pos+1, end-pos-1);
     }

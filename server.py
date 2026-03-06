@@ -231,7 +231,7 @@ PORT = int(os.environ.get("RDP_PORT", "8080"))
 ADMIN_TOKEN = os.environ.get("RDP_ADMIN_TOKEN", "change-me-admin-token")
 MAX_ROOMS = int(os.environ.get("RDP_MAX_ROOMS", "100"))
 MAX_CLIENTS_PER_ROOM = int(os.environ.get("RDP_MAX_CLIENTS", "10"))
-PING_INTERVAL = 20
+PING_INTERVAL = 25
 PING_TIMEOUT = 60
 SSL_CERT = os.environ.get("RDP_SSL_CERT", "")
 SSL_KEY  = os.environ.get("RDP_SSL_KEY", "")
@@ -240,7 +240,7 @@ SSL_KEY  = os.environ.get("RDP_SSL_KEY", "")
 @dataclass
 class Connection:
     ws: object
-    role: str           # "host" | "client"
+    role: str           # "host" | "client" | "stream"
     token: str
     user_id: str = ""
     remote: str = ""
@@ -255,13 +255,15 @@ class Room:
     password_hash: str
     host: Optional[Connection] = None
     clients: Dict[str, Connection] = field(default_factory=dict)
+    stream_clients: Dict[str, Connection] = field(default_factory=dict)  # SCRN-only connections
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     frame_count: int = 0
-    
+    _pending_binary_target: str = ""  # Route next binary from host to this client
+
     def is_full(self) -> bool:
         return len(self.clients) >= MAX_CLIENTS_PER_ROOM
-    
+
     def touch(self):
         self.last_activity = time.time()
 
@@ -292,7 +294,7 @@ def make_event(event: str, data) -> str:
     return json.dumps({"event": event, "data": data})
 
 # ─── Room management ─────────────────────────────────────────────────────────
-async def get_or_create_room(token: str, password: str = "") -> Room:
+async def get_or_create_room(token: str, password: str = "", role: str = "client") -> Room:
     async with rooms_lock:
         if token not in rooms:
             if len(rooms) >= MAX_ROOMS:
@@ -302,6 +304,9 @@ async def get_or_create_room(token: str, password: str = "") -> Room:
                 password_hash=hash_password(password) if password else "",
             )
             log.info(f"Room created: {token}")
+        elif role == "host" and password:
+            # Host reconnects with new password — update the room's password
+            rooms[token].password_hash = hash_password(password)
         return rooms[token]
 
 async def cleanup_empty_rooms():
@@ -351,23 +356,23 @@ async def handler(websocket, path: str):
             await websocket.send(make_error("Missing token"))
             return
         
-        if role not in ("host", "client"):
+        if role not in ("host", "client", "stream"):
             await websocket.send(make_error("Invalid role"))
             return
         
         try:
-            room = await get_or_create_room(token, password if role == "host" else "")
+            room = await get_or_create_room(token, password if role == "host" else "", role)
         except ValueError as e:
             await websocket.send(make_error(str(e)))
             return
         
-        # Password check for clients
-        if role == "client":
+        # Password check for clients and stream connections
+        if role in ("client", "stream"):
             if not check_password(password, room.password_hash):
                 await websocket.send(make_error("Wrong password"))
                 log.warning(f"Auth failed from {remote} (wrong password)")
                 return
-            if room.is_full():
+            if role == "client" and room.is_full():
                 await websocket.send(make_error("Room full"))
                 return
         
@@ -391,6 +396,8 @@ async def handler(websocket, path: str):
                         await old_host.ws.close()
                     except:
                         pass
+            elif role == "stream":
+                room.stream_clients[user_id] = conn
             else:
                 room.clients[user_id] = conn
             room.touch()
@@ -408,7 +415,7 @@ async def handler(websocket, path: str):
         # Notify clients that host came online
         if role == "host":
             await broadcast_to_clients(room, make_event("host_online", {"user_id": user_id}))
-        # Notify host that a client joined
+        # Notify host that a client joined (not for stream-only connections)
         if role == "client" and room.host:
             try:
                 await room.host.ws.send(make_event("client_joined", {"user_id": user_id}))
@@ -421,22 +428,38 @@ async def handler(websocket, path: str):
             room.touch()
             
             if isinstance(raw_msg, bytes):
-                # Binary: forward to host or broadcast to clients
                 conn.bytes_recv += len(raw_msg)
                 if role == "client" and room.host:
+                    # Binary from client (FILE upload chunks) → forward to host
                     try:
                         await room.host.ws.send(raw_msg)
                         room.host.bytes_sent += len(raw_msg)
                     except:
                         log.warning(f"Failed to forward binary to host")
                 elif role == "host":
-                    # Screen frame — count it
                     if len(raw_msg) >= 4 and raw_msg[:4] == b'SCRN':
+                        # SCRN frames → ONLY to stream_clients, NOT to command clients
                         room.frame_count += 1
-                    await broadcast_to_clients(room, raw_msg)
+                        await broadcast_scrn_to_stream_clients(room, raw_msg)
+                    else:
+                        # FILE chunks → route to specific client if we have a pending target
+                        target = room._pending_binary_target
+                        room._pending_binary_target = ""
+                        if target and target in room.clients:
+                            try:
+                                await room.clients[target].ws.send(raw_msg)
+                                room.clients[target].bytes_sent += len(raw_msg)
+                            except:
+                                pass
+                        else:
+                            # Fallback: broadcast to all command clients
+                            await broadcast_to_clients(room, raw_msg)
+                # role == "stream" sends nothing to host
             else:
                 # Text JSON: route by role
                 conn.bytes_recv += len(raw_msg.encode())
+                if role == "stream":
+                    continue  # stream connections are receive-only
                 try:
                     msg = json.loads(raw_msg)
                 except:
@@ -446,7 +469,6 @@ async def handler(websocket, path: str):
                     # Client → Host
                     if room.host:
                         try:
-                            # Tag message with sender
                             msg["_from"] = user_id
                             await room.host.ws.send(json.dumps(msg))
                         except:
@@ -455,18 +477,22 @@ async def handler(websocket, path: str):
                         await websocket.send(make_error("Host not connected"))
                 
                 elif role == "host":
+                    # Routing hint: next binary message goes to specific client
+                    route_target = msg.get("_route_binary_to", "")
+                    if route_target:
+                        room._pending_binary_target = route_target
+                        continue  # Don't forward routing hints to clients
+
                     # Host response → route to correct client
                     target_id = msg.get("_to", "")
-                    resp_id   = msg.get("id", "")
-                    
-                    # Find client by request id prefix or explicit _to
+
                     if target_id and target_id in room.clients:
                         try:
                             await room.clients[target_id].ws.send(json.dumps(msg))
                         except:
                             pass
                     else:
-                        # Broadcast host events to all clients
+                        # Broadcast text to command clients only (not stream connections)
                         await broadcast_to_clients(room, json.dumps(msg))
     
     except websockets.exceptions.ConnectionClosed as e:
@@ -482,6 +508,8 @@ async def handler(websocket, path: str):
                     log.info(f"Host disconnected: token={token[:8]}...")
                 elif conn.role == "client":
                     room.clients.pop(conn.user_id, None)
+                elif conn.role == "stream":
+                    room.stream_clients.pop(conn.user_id, None)
             
             if conn.role == "host":
                 await broadcast_to_clients(room, make_event("host_offline", {}))
@@ -492,6 +520,7 @@ async def handler(websocket, path: str):
                     pass
 
 async def broadcast_to_clients(room: Room, msg):
+    """Send text/FILE messages to command clients only (not stream-only connections)."""
     if not room.clients:
         return
     dead = []
@@ -503,6 +532,28 @@ async def broadcast_to_clients(room: Room, msg):
             dead.append(uid)
     for uid in dead:
         room.clients.pop(uid, None)
+
+async def broadcast_scrn_to_stream_clients(room: Room, frame: bytes):
+    """Send SCRN binary frames only to stream-dedicated connections.
+    Uses asyncio.wait_for with a timeout to prevent slow clients from blocking the host."""
+    dead = []
+    for uid, c in list(room.stream_clients.items()):
+        try:
+            await asyncio.wait_for(c.ws.send(frame), timeout=2.0)
+            c.bytes_sent += len(frame)
+        except asyncio.TimeoutError:
+            log.warning(f"Stream client {uid} too slow, dropping")
+            dead.append(uid)
+        except:
+            dead.append(uid)
+    for uid in dead:
+        room.stream_clients.pop(uid, None)
+        try:
+            c = room.stream_clients.get(uid)
+            if c:
+                await c.ws.close()
+        except:
+            pass
 
 # ─── Stats endpoint ──────────────────────────────────────────────────────────
 async def stats_handler(websocket, path: str):
@@ -602,6 +653,7 @@ async def main():
         ping_interval=PING_INTERVAL,
         ping_timeout=PING_TIMEOUT,
         max_size=50 * 1024 * 1024,
+        write_limit=256 * 1024,  # 256KB write buffer for large SCRN frames
         compression=None,
         process_request=_fix_connection_header,
     )
@@ -611,8 +663,13 @@ async def main():
         serve_kw.pop("process_request", None)
         server = await websockets.serve(router, HOST, PORT, **serve_kw)
         log.warning("websockets.serve does not support process_request; proxy Connection fix disabled")
-    
-    log.info(f"Server running. ws{'s' if ssl_ctx else ''}://{HOST}:{PORT}")
+
+    log.info(
+        f"Server running. ws{'s' if ssl_ctx else ''}://{HOST}:{PORT}  "
+        f"ping_interval={PING_INTERVAL}s ping_timeout={PING_TIMEOUT}s "
+        f"max_size={serve_kw.get('max_size',0)//1024//1024}MB "
+        f"write_limit={serve_kw.get('write_limit',0)//1024}KB"
+    )
     await server.wait_closed()
 
 if __name__ == "__main__":

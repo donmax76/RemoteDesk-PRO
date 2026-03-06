@@ -45,16 +45,16 @@ bool init_from_offer(const std::string& type, const std::string& sdp, SendTextFn
 
         g_pc = std::make_shared<rtc::PeerConnection>(config);
 
-        g_pc->onDataChannel([&](std::shared_ptr<rtc::DataChannel> dc) {
+        g_pc->onDataChannel([](std::shared_ptr<rtc::DataChannel> dc) {
             std::lock_guard<std::mutex> lk(g_mutex);
             g_dc = std::move(dc);
         });
 
-        g_pc->onLocalDescription([&](rtc::Description desc) {
+        g_pc->onLocalDescription([](rtc::Description desc) {
             send_answer(desc);
         });
 
-        g_pc->onLocalCandidate([&](rtc::Candidate candidate) {
+        g_pc->onLocalCandidate([](rtc::Candidate candidate) {
             send_ice(candidate);
         });
 

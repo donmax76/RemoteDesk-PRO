@@ -65,9 +65,33 @@ public:
     // Returns JPEG bytes for one frame
     bool capture(Frame& frame) {
         if (!initialized_) return false;
+
+        // If DXGI failed previously, periodically try to reinitialize it
+        // (TeamViewer/AnyDesk release GPU after closing)
+        if (use_gdi_) {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_dxgi_retry_).count();
+            if (elapsed >= dxgi_retry_interval_s_) {
+                last_dxgi_retry_ = now;
+                LOG_INFO("Attempting DXGI re-initialization...");
+                duplication_.Reset();
+                d3dDevice_.Reset();
+                d3dContext_.Reset();
+                if (init_dxgi()) {
+                    use_gdi_ = false;
+                    dxgi_fail_count_ = 0;
+                    dxgi_retry_interval_s_ = 3;
+                    LOG_INFO("DXGI re-initialized successfully, switching back from GDI");
+                } else {
+                    // Exponential backoff on retries: 3s, 6s, 12s, max 30s
+                    dxgi_retry_interval_s_ = std::min(dxgi_retry_interval_s_ * 2, 30);
+                }
+            }
+        }
+
         if (!use_gdi_) {
             if (capture_dxgi(frame)) return true;
-            // fallback
+            // DXGI returned false but didn't switch to GDI - might be a timeout, fall through to GDI once
         }
         return capture_gdi(frame);
     }
@@ -89,22 +113,34 @@ private:
     ComPtr<IDXGIOutputDuplication> duplication_;
     int screen_w_=0, screen_h_=0;
 
+    // DXGI recovery: periodically retry after falling back to GDI
+    int dxgi_fail_count_ = 0;
+    int dxgi_retry_interval_s_ = 3;
+    std::chrono::steady_clock::time_point last_dxgi_retry_ = std::chrono::steady_clock::now();
+
     bool init_dxgi() {
         HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
             0, nullptr, 0, D3D11_SDK_VERSION, &d3dDevice_, nullptr, &d3dContext_);
         if (FAILED(hr)) return false;
 
         ComPtr<IDXGIDevice> dxgiDevice;
-        d3dDevice_.As(&dxgiDevice);
+        hr = d3dDevice_.As(&dxgiDevice);
+        if (FAILED(hr)) { d3dDevice_.Reset(); d3dContext_.Reset(); return false; }
+
         ComPtr<IDXGIAdapter> adapter;
-        dxgiDevice->GetAdapter(&adapter);
+        hr = dxgiDevice->GetAdapter(&adapter);
+        if (FAILED(hr)) { d3dDevice_.Reset(); d3dContext_.Reset(); return false; }
+
         ComPtr<IDXGIOutput> output;
-        adapter->EnumOutputs(0, &output);
+        hr = adapter->EnumOutputs(0, &output);
+        if (FAILED(hr)) { d3dDevice_.Reset(); d3dContext_.Reset(); return false; }
+
         ComPtr<IDXGIOutput1> output1;
-        output.As(&output1);
+        hr = output.As(&output1);
+        if (FAILED(hr)) { d3dDevice_.Reset(); d3dContext_.Reset(); return false; }
 
         hr = output1->DuplicateOutput(d3dDevice_.Get(), &duplication_);
-        if (FAILED(hr)) return false;
+        if (FAILED(hr)) { d3dDevice_.Reset(); d3dContext_.Reset(); return false; }
 
         DXGI_OUTPUT_DESC desc{};
         output->GetDesc(&desc);
@@ -114,14 +150,51 @@ private:
     }
 
     bool capture_dxgi(Frame& frame) {
+        if (!duplication_) return false;
+
         DXGI_OUTDUPL_FRAME_INFO fi{};
         ComPtr<IDXGIResource> res;
         HRESULT hr = duplication_->AcquireNextFrame(100, &fi, &res);
+
         if (hr == DXGI_ERROR_WAIT_TIMEOUT) return false;
-        if (FAILED(hr)) { use_gdi_=true; return false; }
+
+        if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_INVALID_CALL) {
+            // Another app (TeamViewer, AnyDesk, RDP) took exclusive GPU access
+            // Don't permanently fall back to GDI - try reinit, and if it fails
+            // use GDI temporarily with periodic DXGI retry
+            ++dxgi_fail_count_;
+            LOG_WARN("DXGI ACCESS_LOST (count=" + std::to_string(dxgi_fail_count_) + "), reinitializing...");
+            duplication_.Reset();
+            d3dDevice_.Reset();
+            d3dContext_.Reset();
+            if (!init_dxgi()) {
+                use_gdi_ = true; // Temporary GDI fallback, will retry DXGI periodically
+                dxgi_retry_interval_s_ = 3;
+                last_dxgi_retry_ = std::chrono::steady_clock::now();
+                LOG_WARN("DXGI reinit failed, using GDI temporarily (will retry every few seconds)");
+            } else {
+                LOG_INFO("DXGI reinit successful after ACCESS_LOST");
+                dxgi_fail_count_ = 0;
+            }
+            return false;
+        }
+
+        if (FAILED(hr)) {
+            // Unknown DXGI error - switch to GDI temporarily
+            use_gdi_ = true;
+            dxgi_retry_interval_s_ = 5;
+            last_dxgi_retry_ = std::chrono::steady_clock::now();
+            return false;
+        }
+
+        // Ensure frame is always released even on error
+        struct FrameGuard {
+            IDXGIOutputDuplication* dup;
+            ~FrameGuard() { if (dup) dup->ReleaseFrame(); }
+        } frameGuard{duplication_.Get()};
 
         ComPtr<ID3D11Texture2D> tex;
-        res.As(&tex);
+        if (FAILED(res.As(&tex))) return false;
 
         D3D11_TEXTURE2D_DESC texDesc{};
         tex->GetDesc(&texDesc);
@@ -133,22 +206,22 @@ private:
         stagingDesc.MiscFlags      = 0;
 
         ComPtr<ID3D11Texture2D> staging;
-        d3dDevice_->CreateTexture2D(&stagingDesc, nullptr, &staging);
+        if (FAILED(d3dDevice_->CreateTexture2D(&stagingDesc, nullptr, &staging))) return false;
         d3dContext_->CopyResource(staging.Get(), tex.Get());
 
         D3D11_MAPPED_SUBRESOURCE mapped{};
-        d3dContext_->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+        if (FAILED(d3dContext_->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) return false;
 
         int w = texDesc.Width, h = texDesc.Height;
         int sw = w * scale_ / 100;
         int sh = h * scale_ / 100;
 
-        // Convert BGRA to RGB bitmap
-        Gdiplus::Bitmap bmp(w, h, mapped.RowPitch, PixelFormat32bppRGB, (BYTE*)mapped.pData);
+        // DXGI gives BGRA which maps to GDI+ 32bppARGB
+        Gdiplus::Bitmap bmp(w, h, mapped.RowPitch, PixelFormat32bppARGB, (BYTE*)mapped.pData);
         encode_image(bmp, sw, sh, frame);
 
         d3dContext_->Unmap(staging.Get(), 0);
-        duplication_->ReleaseFrame();
+        // frameGuard destructor calls ReleaseFrame()
 
         frame.width     = sw;
         frame.height    = sh;
@@ -166,13 +239,14 @@ private:
         int sh        = h * scale_ / 100;
 
         HBITMAP hBmp  = CreateCompatibleBitmap(screenDC, sw, sh);
-        SelectObject(memDC, hBmp);
+        HGDIOBJ hOld  = SelectObject(memDC, hBmp);  // save original
         SetStretchBltMode(memDC, HALFTONE);
         StretchBlt(memDC, 0, 0, sw, sh, screenDC, 0, 0, w, h, SRCCOPY);
 
         Gdiplus::Bitmap bmp(hBmp, nullptr);
         encode_image(bmp, sw, sh, frame);
 
+        SelectObject(memDC, hOld);  // restore original before deleting
         DeleteObject(hBmp);
         DeleteDC(memDC);
         ReleaseDC(nullptr, screenDC);
@@ -188,10 +262,10 @@ private:
         using namespace Gdiplus;
 
         std::unique_ptr<Bitmap> scaled;
-        if (sw != bmp.GetWidth() || sh != bmp.GetHeight()) {
+        if ((int)sw != (int)bmp.GetWidth() || (int)sh != (int)bmp.GetHeight()) {
             scaled.reset(new Bitmap(sw, sh, PixelFormat24bppRGB));
             Graphics g(scaled.get());
-            g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+            g.SetInterpolationMode(InterpolationModeBilinear);  // Faster than Bicubic for real-time streaming
             g.DrawImage(&bmp, 0, 0, sw, sh);
         }
 
@@ -208,6 +282,8 @@ private:
         }
 
         IStream* stream = SHCreateMemStream(nullptr, 0);
+        if (!stream) return;
+
         if (codec_ == "jpeg") {
             EncoderParameters params{};
             params.Count = 1;

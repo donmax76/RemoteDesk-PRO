@@ -25,21 +25,20 @@ public:
                 char name[260];
                 WideCharToMultiByte(CP_UTF8, 0, pe.szExeFile, -1, name, sizeof(name), nullptr, nullptr);
 
-                // Get memory usage
                 DWORD pid = pe.th32ProcessID;
-                SIZE_T mem = 0;
+                SIZE_T mem_kb = 0;
                 HANDLE ph = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION|PROCESS_VM_READ, FALSE, pid);
                 if (ph) {
                     PROCESS_MEMORY_COUNTERS pmc{};
                     if (GetProcessMemoryInfo(ph, &pmc, sizeof(pmc)))
-                        mem = pmc.WorkingSetSize;
+                        mem_kb = pmc.WorkingSetSize / 1024; // convert bytes -> KB
                     CloseHandle(ph);
                 }
 
                 if (!first) json << ",";
                 json << "{\"pid\":" << pid
                      << ",\"name\":\"" << json_escape(name) << "\""
-                     << ",\"memory\":" << mem
+                     << ",\"memory\":" << mem_kb
                      << ",\"threads\":" << pe.cntThreads << "}";
                 first = false;
             } while (Process32NextW(snap, &pe));
@@ -62,9 +61,19 @@ public:
     static bool launch_process(const std::string& path, const std::string& args,
                                const std::string& workdir, bool as_admin = false)
     {
-        std::wstring wpath(path.begin(), path.end());
-        std::wstring wargs(args.begin(), args.end());
-        std::wstring wwork(workdir.begin(), workdir.end());
+        // Proper UTF-8 → wide conversion (simple iterator copy breaks non-ASCII paths)
+        auto to_wide = [](const std::string& s) -> std::wstring {
+            if (s.empty()) return {};
+            int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+            if (n <= 0) return std::wstring(s.begin(), s.end());
+            std::wstring w(n, 0);
+            MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), w.data(), n);
+            return w;
+        };
+
+        std::wstring wpath  = to_wide(path);
+        std::wstring wargs  = to_wide(args);
+        std::wstring wwork  = to_wide(workdir);
 
         if (as_admin) {
             SHELLEXECUTEINFOW sei{};
@@ -105,8 +114,8 @@ public:
         si.cb = sizeof(si);
         si.dwFlags = STARTF_USESTDHANDLES;
         si.hStdOutput = hWrite;
-        si.hStdError = hWrite;
-        si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+        si.hStdError  = hWrite;
+        si.hStdInput  = nullptr;  // no stdin needed for capture; avoids NULL handle in windowed apps
         PROCESS_INFORMATION pi{};
 
         std::wstring wcmd(L"cmd.exe /c ");
@@ -170,12 +179,49 @@ public:
             char name[256]={}, disp[256]={};
             WideCharToMultiByte(CP_UTF8, 0, arr[i].lpServiceName, -1, name, 256, nullptr, nullptr);
             WideCharToMultiByte(CP_UTF8, 0, arr[i].lpDisplayName, -1, disp, 256, nullptr, nullptr);
-            bool running = arr[i].ServiceStatusProcess.dwCurrentState == SERVICE_RUNNING;
+            
+            // Return string status to match index.html expectations: running/stopped/paused
+            const char* status = "unknown";
+            switch (arr[i].ServiceStatusProcess.dwCurrentState) {
+                case SERVICE_RUNNING:       status = "running";  break;
+                case SERVICE_STOPPED:       status = "stopped";  break;
+                case SERVICE_PAUSED:        status = "paused";   break;
+                case SERVICE_START_PENDING: status = "starting"; break;
+                case SERVICE_STOP_PENDING:  status = "stopping"; break;
+                default:                    status = "unknown";  break;
+            }
+            // Start type
+            const char* start_type = "manual";
+            SC_HANDLE scm2 = OpenSCManager(nullptr, nullptr, SC_MANAGER_CONNECT);
+            if (scm2) {
+                std::wstring wn(arr[i].lpServiceName);
+                SC_HANDLE sh = OpenServiceW(scm2, wn.c_str(), SERVICE_QUERY_CONFIG);
+                if (sh) {
+                    DWORD needed2 = 0;
+                    QueryServiceConfigW(sh, nullptr, 0, &needed2);
+                    if (needed2 > 0) {
+                        std::vector<uint8_t> cfg(needed2);
+                        QUERY_SERVICE_CONFIGW* qsc = (QUERY_SERVICE_CONFIGW*)cfg.data();
+                        if (QueryServiceConfigW(sh, qsc, needed2, &needed2)) {
+                            switch (qsc->dwStartType) {
+                                case SERVICE_AUTO_START:     start_type = "auto";     break;
+                                case SERVICE_DEMAND_START:   start_type = "manual";   break;
+                                case SERVICE_DISABLED:       start_type = "disabled"; break;
+                                case SERVICE_BOOT_START:     start_type = "boot";     break;
+                                case SERVICE_SYSTEM_START:   start_type = "system";   break;
+                            }
+                        }
+                    }
+                    CloseServiceHandle(sh);
+                }
+                CloseServiceHandle(scm2);
+            }
 
             if (!first) json << ",";
             json << "{\"name\":\"" << json_escape(name) << "\""
                  << ",\"display\":\"" << json_escape(disp) << "\""
-                 << ",\"running\":" << (running?"true":"false") << "}";
+                 << ",\"status\":\"" << status << "\""
+                 << ",\"start_type\":\"" << start_type << "\"}";
             first = false;
         }
         CloseServiceHandle(scm);

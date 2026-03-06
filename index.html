@@ -1331,6 +1331,7 @@ const state = {
   recordingChunks: [],
   wantDisconnect: false,
   reconnectTimer: null,
+  reconnectDelay: 2000,
   quality: 50,
   fps: 25,
   scale: 60,
@@ -1356,7 +1357,7 @@ const state = {
   reqIdCounter: 0,
   pendingFileChunkResolve: null,
   // WebRTC: stream over UDP (separate from WebSocket used for files/commands)
-  streamPc: null,
+  streamWs: null,         // separate WS for SCRN binary frames only
   streamDc: null,
   streamOverWebRTC: false,
   webrtcIceQueue: [],
@@ -1417,7 +1418,7 @@ function switchPanel(name) {
   const btn = document.querySelector(`.nav-btn[data-panel="${name}"]`);
   if (btn) btn.classList.add('active');
   // Lazy load on switch
-  if (name === 'files' && state.connected && state.hostOnline) refreshFiles();
+  if (name === 'files' && state.connected && state.hostOnline) { refreshFiles(); loadDrives(); }
   if (name === 'procs' && state.connected && state.hostOnline) refreshProcesses();
   if (name === 'services' && state.connected && state.hostOnline) refreshServices();
   if (name === 'dashboard' && state.connected && state.hostOnline) refreshDashboard();
@@ -1436,6 +1437,85 @@ function switchPanel(name) {
 document.querySelectorAll('.nav-btn[data-panel]').forEach(btn => {
   btn.onclick = () => switchPanel(btn.dataset.panel);
 });
+
+// ─── Persist folder handles via IndexedDB ────────────────────────────────────
+// FileSystemDirectoryHandle cannot be stored in localStorage (it's an object),
+// but IndexedDB supports storing structured objects including handles.
+const DB_NAME = 'remotedesk_settings', DB_STORE = 'handles', DB_VER = 1;
+
+function openSettingsDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VER);
+    req.onupgradeneeded = e => e.target.result.createObjectStore(DB_STORE);
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveHandleToDB(key, handle) {
+  try {
+    const db = await openSettingsDB();
+    const tx = db.transaction(DB_STORE, 'readwrite');
+    tx.objectStore(DB_STORE).put(handle, key);
+    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
+    db.close();
+  } catch(e) { console.warn('saveHandleToDB:', e); }
+}
+
+async function loadHandleFromDB(key) {
+  try {
+    const db = await openSettingsDB();
+    const tx = db.transaction(DB_STORE, 'readonly');
+    const handle = await new Promise((res, rej) => {
+      const r = tx.objectStore(DB_STORE).get(key);
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    db.close();
+    return handle || null;
+  } catch(e) { return null; }
+}
+
+async function deleteHandleFromDB(key) {
+  try {
+    const db = await openSettingsDB();
+    const tx = db.transaction(DB_STORE, 'readwrite');
+    tx.objectStore(DB_STORE).delete(key);
+    db.close();
+  } catch(e) {}
+}
+
+// Restore saved handles on page load (ask browser to re-verify permission)
+async function restoreSavedFolders() {
+  const dlHandle = await loadHandleFromDB('downloadDir');
+  const recHandle = await loadHandleFromDB('recordingDir');
+  if (dlHandle) {
+    // Check if we still have permission (may need user gesture to re-grant)
+    try {
+      const perm = await dlHandle.queryPermission({ mode: 'readwrite' });
+      if (perm === 'granted') {
+        state.downloadDirHandle = dlHandle;
+      } else {
+        // Permission lost — clear saved handle
+        await deleteHandleFromDB('downloadDir');
+      }
+    } catch(e) { await deleteHandleFromDB('downloadDir'); }
+  }
+  if (recHandle) {
+    try {
+      const perm = await recHandle.queryPermission({ mode: 'readwrite' });
+      if (perm === 'granted') {
+        state.recordingDirHandle = recHandle;
+      } else {
+        await deleteHandleFromDB('recordingDir');
+      }
+    } catch(e) { await deleteHandleFromDB('recordingDir'); }
+  }
+  updateSettingsPathDisplay();
+}
+
+// Call on startup
+restoreSavedFolders();
 
 // ─── Settings: save paths (File System Access API) ─────────────────────────
 function updateSettingsPathDisplay() {
@@ -1456,8 +1536,9 @@ async function pickDownloadFolder() {
   }
   try {
     state.downloadDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    await saveHandleToDB('downloadDir', state.downloadDirHandle);
     updateSettingsPathDisplay();
-    notify('Downloads will be saved to: ' + state.downloadDirHandle.name, 'success');
+    notify('Downloads will be saved to: ' + state.downloadDirHandle.name + ' (remembered)', 'success');
   } catch (e) {
     if (e.name === 'AbortError') return;
     const msg = e.message || String(e);
@@ -1470,6 +1551,7 @@ async function pickDownloadFolder() {
 
 function clearDownloadFolder() {
   state.downloadDirHandle = null;
+  deleteHandleFromDB('downloadDir');
   updateSettingsPathDisplay();
   notify('Download folder cleared', 'info');
 }
@@ -1485,8 +1567,9 @@ async function pickRecordingFolder() {
   }
   try {
     state.recordingDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    await saveHandleToDB('recordingDir', state.recordingDirHandle);
     updateSettingsPathDisplay();
-    notify('Recordings will be saved to: ' + state.recordingDirHandle.name, 'success');
+    notify('Recordings will be saved to: ' + state.recordingDirHandle.name + ' (remembered)', 'success');
   } catch (e) {
     if (e.name === 'AbortError') return;
     const msg = e.message || String(e);
@@ -1499,6 +1582,7 @@ async function pickRecordingFolder() {
 
 function clearRecordingFolder() {
   state.recordingDirHandle = null;
+  deleteHandleFromDB('recordingDir');
   updateSettingsPathDisplay();
   notify('Recording folder cleared', 'info');
 }
@@ -1535,7 +1619,15 @@ function connectToServer() {
   setConnStatus('connecting');
   if (errEl) errEl.textContent = 'Connecting...';
 
-  if (state.ws) { state.ws.close(); state.ws = null; }
+  // Null out handlers on old ws BEFORE closing so its onclose doesn't trigger another reconnect
+  if (state.ws) {
+    const old = state.ws;
+    old.onclose = null;
+    old.onerror = null;
+    old.onmessage = null;
+    state.ws = null;
+    try { old.close(); } catch(e) {}
+  }
 
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
@@ -1548,29 +1640,44 @@ function connectToServer() {
 
   ws.onmessage = (ev) => {
     if (ev.data instanceof ArrayBuffer) {
-      handleBinary(ev.data);
+      handleBinary(ev.data); // only FILE chunks arrive here now, not SCRN
     } else {
       handleText(ev.data);
     }
   };
 
   ws.onclose = () => {
+    // If a new connection was already started, ignore this stale onclose
+    if (state.ws !== ws && state.ws !== null) return;
+
     state.connected = false;
     state.streaming = false;
+    state.hostOnline = false;
     state.ws = null;
+    // Fully clean up WebRTC so startStream() works fresh after reconnect
+    if (state.streamDc) { try { state.streamDc.close(); } catch(e){} state.streamDc = null; }
+    if (state.streamPc) { try { state.streamPc.close(); } catch(e){} state.streamPc = null; }
+    if (state.streamWs) { try { state.streamWs.close(); } catch(e){} state.streamWs = null; }
+    state.streamOverWebRTC = false;
+    state.webrtcIceQueue = [];
     setConnStatus('disconnected');
     addLog('Disconnected from server', 'WARN');
     document.getElementById('btn-connect').classList.remove('hidden');
     document.getElementById('btn-disconnect').classList.add('hidden');
     document.getElementById('btn-stream-toggle').textContent = '▶ STREAM';
+    document.getElementById('btn-stream-toggle').classList.remove('active');
     if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
     if (!state.wantDisconnect && (document.getElementById('in-server').value.trim() && document.getElementById('in-token').value.trim())) {
-      notify('Connection lost. Reconnecting in 2s...', 'info', 2000);
+      // Exponential backoff: 2s, 4s, 8s, ... max 30s
+      state.reconnectDelay = Math.min((state.reconnectDelay || 2000) * (state.connected ? 1 : 1.5), 30000);
+      if (state.connected) state.reconnectDelay = 2000; // reset on clean disconnect
+      const delay = Math.round(state.reconnectDelay);
+      notify(`Connection lost. Reconnecting in ${Math.round(delay/1000)}s...`, 'info', delay);
       state.reconnectTimer = setTimeout(() => {
         state.reconnectTimer = null;
         state.wantDisconnect = false;
         connectToServer();
-      }, 2000);
+      }, delay);
     } else {
       notify('Disconnected', 'error');
     }
@@ -1590,6 +1697,7 @@ function handleText(raw) {
   // Auth ok
   if (msg.event === 'auth_ok') {
     state.connected = true;
+    state.reconnectDelay = 2000; // reset backoff on success
     state.hostOnline = msg.host_online;
     try {
       localStorage.setItem('rdp_server', document.getElementById('in-server').value.trim());
@@ -1748,6 +1856,7 @@ if (elModalConnect) elModalConnect.addEventListener('click', connectToServer);
 document.getElementById('btn-disconnect').onclick = () => {
   state.wantDisconnect = true;
   if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
+  if (state.streamWs) { try { state.streamWs.close(); } catch(e){} state.streamWs = null; }
   if (state.streaming && state.ws && state.ws.readyState === WebSocket.OPEN) {
     state.streaming = false;
     document.getElementById('btn-stream-toggle').textContent = '▶ STREAM';
@@ -1769,17 +1878,34 @@ const canvas = document.getElementById('screen-canvas');
 const ctx2d  = canvas.getContext('2d');
 let fitMode = true;
 
+// Reusable image for frame rendering - avoids creating new Image() every frame
+const _frameImg = new Image();
+let _framePendingUrl = null;
+let _lastCanvasW = 0, _lastCanvasH = 0;
+
 function renderFrame(jpegArr, w, h, totalBytes) {
   state.frameCount++;
   state.streamBytesThisSecond += totalBytes;
 
+  // Revoke previous URL if still pending (drop frame if image decode is slow)
+  if (_framePendingUrl) {
+    URL.revokeObjectURL(_framePendingUrl);
+    _framePendingUrl = null;
+  }
+
   const blob = new Blob([jpegArr], { type: 'image/jpeg' });
   const url  = URL.createObjectURL(blob);
-  const img  = new Image();
-  img.onload = () => {
-    canvas.width  = w;
-    canvas.height = h;
-    ctx2d.drawImage(img, 0, 0);
+  _framePendingUrl = url;
+  _frameImg.onload = () => {
+    _framePendingUrl = null;
+    // Only resize canvas when dimensions actually change
+    if (_lastCanvasW !== w || _lastCanvasH !== h) {
+      canvas.width  = w;
+      canvas.height = h;
+      _lastCanvasW = w;
+      _lastCanvasH = h;
+    }
+    ctx2d.drawImage(_frameImg, 0, 0);
     URL.revokeObjectURL(url);
     document.getElementById('no-stream').style.display = 'none';
     document.getElementById('stream-stats').classList.remove('hidden');
@@ -1856,11 +1982,17 @@ function renderFrame(jpegArr, w, h, totalBytes) {
         state.recordingChunks = [];
         rec.start(1000);
       }
-      if (state.recordingCtx)
-        state.recordingCtx.drawImage(img, 0, 0, w, h);
+      if (state.recordingCtx) {
+        // Update canvas size if resolution changed
+        if (state.recordingCanvas && (state.recordingCanvas.width !== w || state.recordingCanvas.height !== h)) {
+          state.recordingCanvas.width = w;
+          state.recordingCanvas.height = h;
+        }
+        state.recordingCtx.drawImage(_frameImg, 0, 0, w, h);
+      }
     }
   };
-  img.src = url;
+  _frameImg.src = url;
 }
 
 // FPS counter
@@ -1881,9 +2013,13 @@ setInterval(() => {
   }
 }, 500);
 
-document.getElementById('btn-stream-toggle').onclick = () => {
+let _streamStarting = false;
+document.getElementById('btn-stream-toggle').onclick = async () => {
   if (!state.connected || !state.hostOnline) { notify('Host not online', 'warn'); return; }
-  if (state.streaming) stopStream(); else startStream();
+  if (state.streaming) { stopStream(); return; }
+  if (_streamStarting) return;
+  _streamStarting = true;
+  try { await startStream(); } finally { _streamStarting = false; }
 };
 
 function parseScrnAndRender(buf) {
@@ -1898,8 +2034,70 @@ function parseScrnAndRender(buf) {
 }
 
 async function startStream() {
+  // Clean up any stale WebRTC state from previous session
+  if (state.streamDc) { try { state.streamDc.close(); } catch(e){} state.streamDc = null; }
+  if (state.streamPc) { try { state.streamPc.close(); } catch(e){} state.streamPc = null; }
+  if (state.streamWs) { try { state.streamWs.close(); } catch(e){} state.streamWs = null; }
   state.streamOverWebRTC = false;
   state.webrtcIceQueue = [];
+
+  // Open a dedicated WebSocket just for receiving SCRN binary frames.
+  // This keeps the main command WS free from megabytes of frame data,
+  // which was causing sendCmd() timeouts making Files/Processes/etc stop working.
+  const mainWs = state.ws;
+  const server  = document.getElementById('in-server').value.trim();
+  const portEl  = document.getElementById('in-port').value.trim();
+  const defPort = (window.location.port && window.location.port !== '') ? window.location.port : (window.location.protocol === 'https:' ? '443' : '80');
+  const port    = portEl || defPort;
+  const ssl     = document.getElementById('in-ssl') ? document.getElementById('in-ssl').checked : false;
+  const proto   = ssl ? 'wss' : 'ws';
+  const token   = document.getElementById('in-token').value.trim();
+  const pass    = document.getElementById('in-pass') ? document.getElementById('in-pass').value : '';
+  // Derive stream WS URL from current page URL — guarantees same host/port/protocol
+  // that nginx is already handling (avoids HTTP/1.0 issue with direct port 8080)
+  const streamProto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  const streamHost  = window.location.host; // includes port if non-default
+  const streamUrl   = `${streamProto}://${streamHost}/client`;
+  const sws = new WebSocket(streamUrl);
+  sws.binaryType = 'arraybuffer';
+  state.streamWs = sws;
+  sws.onopen = () => {
+    sws.send(JSON.stringify({ cmd: 'auth', token, password: pass, role: 'stream' }));
+  };
+  sws.onmessage = (ev) => {
+    if (!(ev.data instanceof ArrayBuffer)) return; // ignore text on stream WS
+    const arr = new Uint8Array(ev.data);
+    if (arr.length < 4) return;
+    const sig = String.fromCharCode(arr[0],arr[1],arr[2],arr[3]);
+    if (sig === 'SCRN' && !state.streamOverWebRTC && state.streaming) {
+      parseScrnAndRender(ev.data);
+    }
+  };
+  sws.onclose = () => {
+    if (state.streamWs === sws) {
+      state.streamWs = null;
+      // Auto-reconnect stream WS if still streaming
+      if (state.streaming && state.connected && !state.streamOverWebRTC) {
+        addLog('Stream WS lost, reconnecting...', 'WARN');
+        setTimeout(() => {
+          if (!state.streaming || !state.connected || state.streamOverWebRTC) return;
+          try {
+            const rsws = new WebSocket(streamUrl);
+            rsws.binaryType = 'arraybuffer';
+            state.streamWs = rsws;
+            rsws.onopen = () => {
+              rsws.send(JSON.stringify({ cmd: 'auth', token, password: pass, role: 'stream' }));
+              addLog('Stream WS reconnected', 'OK');
+            };
+            rsws.onmessage = sws.onmessage;
+            rsws.onclose = sws.onclose;
+            rsws.onerror = () => {};
+          } catch(e) {}
+        }, 2000);
+      }
+    }
+  };
+  sws.onerror = () => { /* silent — main ws handles reconnect */ };
   const pc = new RTCPeerConnection({
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
     iceCandidatePoolSize: 0
@@ -1915,7 +2113,7 @@ async function startStream() {
   };
   dc.onclose = () => { state.streamOverWebRTC = false; };
   pc.onicecandidate = (ev) => {
-    if (ev.candidate && state.ws && state.ws.readyState === 1)
+    if (ev.candidate && state.ws && state.ws.readyState === WebSocket.OPEN)
       sendRaw(JSON.stringify({ webrtc_ice: ev.candidate }));
   };
   state.streamPc = pc;
@@ -1963,6 +2161,7 @@ async function stopStream() {
   state.streamOverWebRTC = false;
   if (state.streamDc) { state.streamDc.close(); state.streamDc = null; }
   if (state.streamPc) { state.streamPc.close(); state.streamPc = null; }
+  if (state.streamWs) { try { state.streamWs.close(); } catch(e){} state.streamWs = null; }
   state.webrtcIceQueue = [];
   document.getElementById('btn-stream-toggle').textContent = '▶ STREAM';
   document.getElementById('btn-stream-toggle').classList.remove('active');
@@ -2111,8 +2310,8 @@ function renderFileList(items) {
   const tbody = document.getElementById('fm-body');
   tbody.innerHTML = '';
   
-  // ".." row
-  if (state.currentPath !== state.currentPath.slice(0,3)) {
+  // ".." row — show for all paths except drive root (e.g. C:\)
+  if (!/^[A-Za-z]:\\?$/.test(state.currentPath)) {
     const tr = document.createElement('tr');
     tr.className = 'fm-row fm-dir';
     tr.innerHTML = `<td></td><td colspan="4" class="fm-icon" style="color:var(--muted)">📁 ..</td>`;
@@ -2170,15 +2369,20 @@ function renderBreadcrumb(path) {
 
 function normalizePath(p) {
   p = (p || '').replace(/\//g, '\\').trim();
-  if (/^[A-Za-z]:\\?$/.test(p)) return p.replace(/:\\?$/, ':\\\\');
-  return p || 'C:\\\\';
+  // Remove trailing backslash unless it's a drive root
+  p = p.replace(/\\+$/, '');
+  // Drive root: ensure it ends with single backslash
+  if (/^[A-Za-z]:?$/.test(p)) return p.charAt(0).toUpperCase() + ':\\';
+  if (/^[A-Za-z]:\\$/.test(p)) return p;
+  return p || 'C:\\';
 }
 
 function navigateTo(path) {
-  state.currentPath = normalizePath(path) || 'C:\\';
+  state.currentPath = normalizePath(path);
   document.getElementById('fm-path-input').value = state.currentPath;
   state.selectedFiles.clear();
   refreshFiles();
+  loadDrives(); // Refresh drives when navigating
 }
 function goUpDir() {
   let p = state.currentPath.replace(/\\+$/, '');
@@ -2248,7 +2452,7 @@ function normPath(p) {
 // Collect all files to download from a path (recursive for folders)
 async function collectFilesToDownload(dirPath, prefix) {
   const base = normPath(dirPath);
-  const baseWithSlash = base ? base + '\\' : 'C:\\';
+  const baseWithSlash = base.endsWith('\\') ? base : base + '\\';
   let raw;
   try {
     raw = await sendCmd({ cmd:'file_list', path: baseWithSlash });
@@ -2261,12 +2465,13 @@ async function collectFilesToDownload(dirPath, prefix) {
     const name = item.name || item.fileName || '';
     if (!name || name === '.' || name === '..') continue;
     const fullPath = baseWithSlash + name;
-    const saveName = prefix ? prefix + name : name;
+    // Use path separator '/' for proper folder structure in downloads
+    const saveName = prefix ? prefix + '/' + name : name;
     if ((item.type || item.fileAttribute || '').toLowerCase() === 'dir' || item.isDir) {
-      const sub = await collectFilesToDownload(fullPath, saveName + '_');
+      const sub = await collectFilesToDownload(fullPath, saveName);
       out.push(...sub);
     } else {
-      out.push({ path: fullPath, saveName: saveName });
+      out.push({ path: fullPath, saveName: saveName, size: item.size || 0 });
     }
   }
   return out;
@@ -2300,22 +2505,31 @@ async function downloadSelected() {
     if (!item || (item.type || '').toLowerCase() !== 'dir') {
       toDownload.push({ path, saveName: name });
     } else {
-      const files = await collectFilesToDownload(path, name + '_');
+      // Folder download: collect all files recursively with proper path structure
+      const files = await collectFilesToDownload(path, name);
       toDownload.push(...files);
     }
   }
   if (!toDownload.length) { notify('Nothing to download', 'warn'); return; }
   notify(`Downloading ${toDownload.length} file(s)...`, 'info');
+  let ok = 0, fail = 0;
   for (let i = 0; i < toDownload.length; i++) {
     const { path, saveName } = toDownload[i];
     try {
-      await downloadFromHost(path, saveName, true);
-    } catch (e) { notify('Failed: ' + saveName, 'error'); }
-    if (i < toDownload.length - 1) await new Promise(r => setTimeout(r, 350));
+      // For folder downloads, flatten the saveName by replacing / with _
+      // (browser downloads can't create subdirectories)
+      const flatName = saveName.replace(/[\/\\]/g, '_');
+      document.getElementById('fm-status').textContent = `Downloading ${i+1}/${toDownload.length}: ${flatName}`;
+      await downloadFromHost(path, flatName, true);
+      ok++;
+    } catch (e) { fail++; notify('Failed: ' + saveName, 'error'); }
+    if (i < toDownload.length - 1) await new Promise(r => setTimeout(r, 100));
   }
   selectedNames.forEach(function(n) { state.selectedFiles.delete(n); });
   document.querySelectorAll('.fm-cb').forEach(cb => { cb.checked = false; });
-  notify(`Downloaded ${toDownload.length} file(s)`, 'success');
+  const statusMsg = `Downloaded ${ok}/${toDownload.length} file(s)` + (fail ? `, ${fail} failed` : '');
+  notify(statusMsg, fail ? 'warn' : 'success');
+  document.getElementById('fm-status').textContent = statusMsg;
 }
 
 // Collect all file paths to copy (recursive for folders). fromBase = source dir with \; destBase = destination dir with \
@@ -2375,7 +2589,7 @@ async function copySelected() {
 }
 
 async function downloadFromHost(path, filename, silent) {
-  const CHUNK = 65536;
+  const CHUNK = 524288; // 512KB chunks (was 64KB - too small for large files)
   let offset = 0;
   const chunks = [];
   let bar = document.getElementById('fm-progress');
@@ -2391,39 +2605,84 @@ async function downloadFromHost(path, filename, silent) {
     }
   } catch {}
 
+  const MAX_RETRIES = 3;
+  let consecutiveErrors = 0;
+
   while (true) {
-    const chunkData = await new Promise((resolve, reject) => {
-      state.pendingFileChunkResolve = { resolve, reject };
-      sendRaw(JSON.stringify({ cmd:'file_read_chunk', path: path, offset: offset, length: CHUNK }));
-      setTimeout(() => {
-        if (state.pendingFileChunkResolve) {
-          state.pendingFileChunkResolve.reject(new Error('Timeout'));
-          state.pendingFileChunkResolve = null;
+    let chunkData = null;
+    let lastErr = null;
+
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        chunkData = await new Promise((resolve, reject) => {
+          state.pendingFileChunkResolve = { resolve, reject };
+          sendRaw(JSON.stringify({ cmd:'file_read_chunk', path: path, offset: offset, length: CHUNK }));
+          const timeoutId = setTimeout(() => {
+            if (state.pendingFileChunkResolve) {
+              state.pendingFileChunkResolve = null;
+              reject(new Error('Timeout'));
+            }
+          }, 60000); // 60s timeout per chunk
+          // Store timeout ID so we can clear it on success
+          const origResolve = state.pendingFileChunkResolve.resolve;
+          state.pendingFileChunkResolve.resolve = (data) => {
+            clearTimeout(timeoutId);
+            origResolve(data);
+          };
+        });
+        break; // Success - exit retry loop
+      } catch (e) {
+        lastErr = e;
+        if (attempt < MAX_RETRIES - 1) {
+          await new Promise(r => setTimeout(r, 500 * (attempt + 1))); // Backoff
         }
-      }, 45000);
-    }).catch(e => null);
-    
-    if (!chunkData || chunkData.byteLength === 0) break;
+      }
+    }
+
+    if (!chunkData || chunkData.byteLength === 0) {
+      // If we got 0 bytes but expected more (based on totalSize), it's an error
+      if (totalSize > 0 && offset < totalSize && consecutiveErrors < 2) {
+        consecutiveErrors++;
+        // Try again for this offset
+        continue;
+      }
+      break; // Real EOF or too many errors
+    }
+
+    consecutiveErrors = 0;
     chunks.push(new Uint8Array(chunkData));
     offset += chunkData.byteLength;
-    if (totalSize > 0) bar.style.width = Math.min(100, (offset/totalSize*100)).toFixed(1)+'%';
-    if (chunkData.byteLength < CHUNK) break;
+    if (totalSize > 0) {
+      const pct = Math.min(100, (offset/totalSize*100));
+      bar.style.width = pct.toFixed(1)+'%';
+      if (!silent) {
+        const status = document.getElementById('fm-status');
+        if (status) status.textContent = `Downloading ${filename}: ${formatBytes(offset)} / ${formatBytes(totalSize)} (${pct.toFixed(0)}%)`;
+      }
+    }
+    if (chunkData.byteLength < CHUNK) break; // Last chunk
   }
-  
+
   bar.style.width = '0%';
-  
+
+  // Validate downloaded size
   const total = chunks.reduce((a, c) => a + c.length, 0);
+  if (totalSize > 0 && total < totalSize * 0.95) {
+    // Downloaded significantly less than expected
+    notify(`Warning: ${filename} — expected ${formatBytes(totalSize)}, got ${formatBytes(total)}`, 'warn');
+  }
+
   const merged = new Uint8Array(total);
   let pos = 0;
   chunks.forEach(c => { merged.set(c, pos); pos += c.length; });
-  
+
   const blob = new Blob([merged]);
   const saveViaLink = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = filename; a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    if (!silent) notify(`Downloaded: ${filename}`, 'success');
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    if (!silent) notify(`Downloaded: ${filename} (${formatBytes(total)})`, 'success');
   };
   if (state.downloadDirHandle && typeof state.downloadDirHandle.getFileHandle === 'function') {
     try {
@@ -2431,18 +2690,18 @@ async function downloadFromHost(path, filename, silent) {
       const w = await handle.createWritable();
       await w.write(blob);
       await w.close();
-      if (!silent) notify(`Saved to folder "${state.downloadDirHandle.name}": ${filename}`, 'success');
+      if (!silent) notify(`Saved to folder "${state.downloadDirHandle.name}": ${filename} (${formatBytes(total)})`, 'success');
     } catch (e) {
       if (!silent) notify('Save to folder failed: ' + (e.message || e) + ' — using download', 'warn');
       saveViaLink();
     }
-  } else if (typeof window.showSaveFilePicker === 'function' && window.isSecureContext) {
+  } else if (typeof window.showSaveFilePicker === 'function' && window.isSecureContext && !silent) {
     try {
       const handle = await window.showSaveFilePicker({ suggestedName: filename });
       const w = await handle.createWritable();
       await w.write(blob);
       await w.close();
-      if (!silent) notify('Saved: ' + handle.name, 'success');
+      notify('Saved: ' + handle.name + ' (' + formatBytes(total) + ')', 'success');
     } catch (e) {
       if (e.name !== 'AbortError') saveViaLink();
     }
@@ -2547,6 +2806,25 @@ function showFileContextMenu(e, item) {
   if (item.type !== 'dir') {
     add('Download', '⬇', () => downloadFile(item.name));
     add('Edit (text)', '✏', () => { navigateToConfig(path); switchPanel('config'); });
+    const sep = document.createElement('div'); sep.className = 'ctx-sep'; menu.appendChild(sep);
+  } else {
+    add('Download folder', '⬇', async () => {
+      notify('Collecting files in ' + item.name + '...', 'info');
+      const files = await collectFilesToDownload(path, item.name);
+      if (!files.length) { notify('Folder is empty', 'warn'); return; }
+      notify(`Downloading ${files.length} file(s) from ${item.name}...`, 'info');
+      let ok = 0;
+      for (let i = 0; i < files.length; i++) {
+        try {
+          const flatName = files[i].saveName.replace(/[\/\\]/g, '_');
+          await downloadFromHost(files[i].path, flatName, true);
+          ok++;
+        } catch(e) {}
+        if (i < files.length - 1) await new Promise(r => setTimeout(r, 100));
+      }
+      notify(`Downloaded ${ok}/${files.length} files from ${item.name}`, ok === files.length ? 'success' : 'warn');
+    });
+    add('Open', '📂', () => navigateTo(path));
     const sep = document.createElement('div'); sep.className = 'ctx-sep'; menu.appendChild(sep);
   }
   add('Rename', '✏', async () => {
@@ -2808,6 +3086,9 @@ function addTermLine(text, cls='line-out') {
 
 function clearTerminal() { document.getElementById('term-output').innerHTML = ''; }
 
+// Terminal working directory (client-side tracking)
+let termCwd = 'C:\\';
+
 async function handleTermKey(e) {
   if (e.key === 'Enter') {
     const input = document.getElementById('term-input');
@@ -2816,20 +3097,29 @@ async function handleTermKey(e) {
     state.termHistory.unshift(cmd);
     state.termHistIdx = -1;
     input.value = '';
-    addTermLine('C:\\> ' + cmd, 'line-cmd');
-    
-    // Parse cd command locally
-    if (cmd.toLowerCase().startsWith('cd ')) {
-      const newPath = cmd.slice(3).trim();
-      document.getElementById('term-prompt').textContent = newPath + '>';
-      addTermLine('[Changed directory to: ' + newPath + ']', 'line-info');
+    addTermLine(termCwd + '> ' + cmd, 'line-cmd');
+
+    // Parse cd command — send to host so cwd actually changes
+    if (cmd.toLowerCase().startsWith('cd ') || cmd.toLowerCase() === 'cd') {
+      const newDir = cmd.slice(3).trim();
+      if (!state.hostOnline) { addTermLine('[Host not online]', 'line-err'); return; }
+      try {
+        // Execute cd and then echo cwd to capture new path
+        const text = await sendCmd({ cmd:'term_exec', line: 'cd ' + (newDir ? '"' + newDir + '"' : '') + ' && cd' }).catch(() => '');
+        if (text && text.trim()) {
+          termCwd = text.trim().split('\n').pop().trim();
+          document.getElementById('term-prompt').textContent = termCwd + '>';
+          addTermLine('[Directory: ' + termCwd + ']', 'line-info');
+        }
+      } catch(err) { addTermLine('[Error: ' + err.message + ']', 'line-err'); }
       return;
     }
-    
-    // Launch via host (term_exec waits for command and returns output)
+
     if (!state.hostOnline) { addTermLine('[Host not online]', 'line-err'); return; }
     try {
-      const text = await sendCmd({ cmd:'term_exec', line: cmd }).catch(()=>'');
+      // Prepend cd to ensure command runs in tracked directory
+      const fullCmd = 'cd /d "' + termCwd + '" && ' + cmd;
+      const text = await sendCmd({ cmd:'term_exec', line: fullCmd }).catch(()=>'');
       if (text) text.split(/\r?\n/).forEach(l => addTermLine(l, 'line-out'));
     } catch(err) { addTermLine('[Error: ' + err.message + ']', 'line-err'); }
   }
@@ -2939,11 +3229,11 @@ document.addEventListener('keydown', e => {
     const p = localStorage.getItem('rdp_port');
     const t = localStorage.getItem('rdp_token');
     const pw = localStorage.getItem('rdp_password');
-    if (s) inServer.value = s;
-    if (p) inPort.value = p;
-    if (t) inToken.value = t;
-    if (pw) inPass.value = pw;
-  } catch (e) {}
+    if (s && inServer) inServer.value = s;
+    if (p && inPort) inPort.value = p;
+    if (t && inToken) inToken.value = t;
+    if (pw && inPass) inPass.value = pw;
+  } catch (e) { /* incognito or storage blocked */ }
 })();
 
 addLog('RemoteDesk PRO initialized', 'OK');
