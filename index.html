@@ -1102,7 +1102,10 @@ body {
         <input type="file" id="upload-input" class="hidden" multiple onchange="handleUpload(this)" />
       </div>
       <div class="fm-breadcrumb" id="fm-breadcrumb"></div>
-      <div class="fm-transfer-bar"><div class="fill" id="fm-progress"></div></div>
+      <div class="fm-transfer-bar" style="position:relative;">
+        <div class="fill" id="fm-progress"></div>
+        <button id="fm-cancel-btn" class="fm-btn danger" style="display:none;position:absolute;right:2px;top:1px;padding:0 8px;height:18px;font-size:10px;line-height:18px;min-width:auto;" onclick="cancelDownload()">✕ Отмена</button>
+      </div>
       <div class="fm-body">
         <div class="fm-sidebar">
           <div class="fm-sidebar-section">Drives</div>
@@ -2188,7 +2191,7 @@ async function startStream() {
     const arr = new Uint8Array(ev.data);
     if (arr.length < 4) return;
     const sig = String.fromCharCode(arr[0],arr[1],arr[2],arr[3]);
-    if (sig === 'SCRN' && !state.streamOverWebRTC && state.streaming) {
+    if ((sig === 'SCRN' || sig === 'SCR2') && !state.streamOverWebRTC && state.streaming) {
       parseScrnAndRender(ev.data);
     }
   };
@@ -2646,7 +2649,9 @@ async function downloadSelected() {
   let ok = 0, fail = 0;
   const batchStart = Date.now();
   let batchDownloaded = 0;
+  _downloadCancelled = false;
   for (let i = 0; i < toDownload.length; i++) {
+    if (_downloadCancelled) break;
     const { path, saveName, size } = toDownload[i];
     try {
       const flatName = saveName.replace(/[\/\\]/g, '_');
@@ -2656,7 +2661,10 @@ async function downloadSelected() {
       const elapsed = (Date.now() - batchStart) / 1000;
       const speed = elapsed > 0.1 ? batchDownloaded / elapsed : 0;
       if (status) status.textContent = `✓ ${ok}/${toDownload.length} — ${flatName} (${formatBytes(size)}) — ${formatSpeed(speed)}`;
-    } catch (e) { fail++; notify('Ошибка: ' + saveName + ' — ' + (e.message || e), 'error'); }
+    } catch (e) {
+      if (_downloadCancelled) break;
+      fail++; notify('Ошибка: ' + saveName + ' — ' + (e.message || e), 'error');
+    }
   }
   selectedNames.forEach(function(n) { state.selectedFiles.delete(n); });
   document.querySelectorAll('.fm-cb').forEach(cb => { cb.checked = false; });
@@ -2732,12 +2740,15 @@ async function downloadFromHost(path, filename, optsOrSilent) {
   const fileIndex = opts.fileIndex || 0;
   const totalFiles = opts.totalFiles || 1;
 
-  const CHUNK = 1048576; // 1MB chunks
-  const PIPELINE = 8;    // 8 in-flight requests for maximum throughput
-  const CHUNK_TIMEOUT = 60000; // 60s per chunk (prevents false timeouts on slow relay)
+  const CHUNK = 2097152; // 2MB chunks for higher throughput
+  const PIPELINE = 10;   // 10 in-flight requests for maximum throughput
+  const CHUNK_TIMEOUT = 60000; // 60s per chunk
   const MAX_RETRIES = 3;
   let bar = document.getElementById('fm-progress');
   const status = document.getElementById('fm-status');
+  const cancelBtn = document.getElementById('fm-cancel-btn');
+  _downloadCancelled = false;
+  if (cancelBtn) cancelBtn.style.display = 'inline-block';
   path = normPath(path);
   if (!path) return;
 
@@ -2814,19 +2825,22 @@ async function downloadFromHost(path, filename, optsOrSilent) {
   }
 
   while (inflight.length > 0) {
+    if (_downloadCancelled) { error = new Error('Cancelled'); break; }
     const current = inflight.shift();
     let chunkData = null;
     try {
       chunkData = await current.promise;
     } catch (e) {
+      if (_downloadCancelled) { error = new Error('Cancelled'); break; }
       error = e;
       console.error('Download chunk error:', e.message);
       break;
     }
 
+    if (_downloadCancelled) { error = new Error('Cancelled'); break; }
+
     if (!chunkData || chunkData.byteLength === 0) {
       if (totalSize > 0 && receivedBytes < totalSize * 0.95) {
-        // Unexpected EOF — try one more time
         try { chunkData = await requestChunkWithRetry(current.offset); } catch(_) {}
       }
       if (!chunkData || chunkData.byteLength === 0) break;
@@ -2837,15 +2851,14 @@ async function downloadFromHost(path, filename, optsOrSilent) {
     updateProgress();
 
     if (chunkData.byteLength < CHUNK) {
-      // Last chunk — drain remaining inflight
       for (const rem of inflight) {
+        if (_downloadCancelled) break;
         try { const d = await rem.promise; if (d && d.byteLength > 0) { chunks.push(new Uint8Array(d)); receivedBytes += d.byteLength; } } catch(_) {}
       }
       inflight.length = 0;
       break;
     }
 
-    // Keep pipeline full
     if (nextSendOffset < maxOffset) {
       inflight.push({ offset: nextSendOffset, promise: requestChunkWithRetry(nextSendOffset) });
       nextSendOffset += CHUNK;
@@ -2857,6 +2870,7 @@ async function downloadFromHost(path, filename, optsOrSilent) {
   state.pendingFileChunkMap = {};
 
   bar.style.width = '0%';
+  if (cancelBtn) cancelBtn.style.display = 'none';
 
   // Final stats
   const total = chunks.reduce((a, c) => a + c.length, 0);
@@ -2915,6 +2929,25 @@ async function downloadFromHost(path, filename, optsOrSilent) {
 
 // Binary file chunk handler (override in state)
 let pendingFileChunks = {};
+let _downloadCancelled = false;
+
+function cancelDownload() {
+  _downloadCancelled = true;
+  // Clear all pending chunk requests
+  Object.values(state.pendingFileChunkMap).forEach(p => {
+    if (p.timeoutId) clearTimeout(p.timeoutId);
+    p.reject(new Error('Download cancelled'));
+  });
+  state.pendingFileChunkMap = {};
+  const bar = document.getElementById('fm-progress');
+  const status = document.getElementById('fm-status');
+  const cancelBtn = document.getElementById('fm-cancel-btn');
+  if (bar) bar.style.width = '0%';
+  if (status) status.textContent = 'Скачивание отменено';
+  if (cancelBtn) cancelBtn.style.display = 'none';
+  notify('Скачивание отменено', 'warn');
+}
+
 function handleFileChunk(buf) {
   const dv = new DataView(buf);
   const plen = dv.getUint16(4, true);
@@ -3039,13 +3072,15 @@ function showFileContextMenu(e, item) {
       let ok = 0, fail = 0;
       const batchStart = Date.now();
       let batchDownloaded = 0;
+      _downloadCancelled = false;
       for (let i = 0; i < files.length; i++) {
+        if (_downloadCancelled) break;
         try {
           const flatName = files[i].saveName.replace(/[\/\\]/g, '_');
           await downloadFromHost(files[i].path, flatName, { silent: true, fileIndex: i, totalFiles: files.length });
           ok++;
           batchDownloaded += (files[i].size || 0);
-        } catch(e) { fail++; }
+        } catch(e) { if (_downloadCancelled) break; fail++; }
       }
       const elapsed = ((Date.now() - batchStart) / 1000).toFixed(1);
       const avgSpeed = elapsed > 0 ? batchDownloaded / parseFloat(elapsed) : 0;
