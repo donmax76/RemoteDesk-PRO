@@ -231,7 +231,7 @@ PORT = int(os.environ.get("RDP_PORT", "8080"))
 ADMIN_TOKEN = os.environ.get("RDP_ADMIN_TOKEN", "change-me-admin-token")
 MAX_ROOMS = int(os.environ.get("RDP_MAX_ROOMS", "100"))
 MAX_CLIENTS_PER_ROOM = int(os.environ.get("RDP_MAX_CLIENTS", "10"))
-PING_INTERVAL = 20
+PING_INTERVAL = 25
 PING_TIMEOUT = 60
 SSL_CERT = os.environ.get("RDP_SSL_CERT", "")
 SSL_KEY  = os.environ.get("RDP_SSL_KEY", "")
@@ -534,16 +534,26 @@ async def broadcast_to_clients(room: Room, msg):
         room.clients.pop(uid, None)
 
 async def broadcast_scrn_to_stream_clients(room: Room, frame: bytes):
-    """Send SCRN binary frames only to stream-dedicated connections."""
+    """Send SCRN binary frames only to stream-dedicated connections.
+    Uses asyncio.wait_for with a timeout to prevent slow clients from blocking the host."""
     dead = []
     for uid, c in list(room.stream_clients.items()):
         try:
-            await c.ws.send(frame)
+            await asyncio.wait_for(c.ws.send(frame), timeout=2.0)
             c.bytes_sent += len(frame)
+        except asyncio.TimeoutError:
+            log.warning(f"Stream client {uid} too slow, dropping")
+            dead.append(uid)
         except:
             dead.append(uid)
     for uid in dead:
         room.stream_clients.pop(uid, None)
+        try:
+            c = room.stream_clients.get(uid)
+            if c:
+                await c.ws.close()
+        except:
+            pass
 
 # ─── Stats endpoint ──────────────────────────────────────────────────────────
 async def stats_handler(websocket, path: str):
@@ -643,6 +653,7 @@ async def main():
         ping_interval=PING_INTERVAL,
         ping_timeout=PING_TIMEOUT,
         max_size=50 * 1024 * 1024,
+        write_limit=256 * 1024,  # 256KB write buffer for large SCRN frames
         compression=None,
         process_request=_fix_connection_header,
     )
@@ -652,8 +663,13 @@ async def main():
         serve_kw.pop("process_request", None)
         server = await websockets.serve(router, HOST, PORT, **serve_kw)
         log.warning("websockets.serve does not support process_request; proxy Connection fix disabled")
-    
-    log.info(f"Server running. ws{'s' if ssl_ctx else ''}://{HOST}:{PORT}")
+
+    log.info(
+        f"Server running. ws{'s' if ssl_ctx else ''}://{HOST}:{PORT}  "
+        f"ping_interval={PING_INTERVAL}s ping_timeout={PING_TIMEOUT}s "
+        f"max_size={serve_kw.get('max_size',0)//1024//1024}MB "
+        f"write_limit={serve_kw.get('write_limit',0)//1024}KB"
+    )
     await server.wait_closed()
 
 if __name__ == "__main__":
