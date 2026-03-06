@@ -12,6 +12,7 @@
 #include <mfidl.h>
 #include <mftransform.h>
 #include <mferror.h>
+#include <strmif.h>     // ICodecAPI
 #include <codecapi.h>
 
 #pragma comment(lib, "mfplat.lib")

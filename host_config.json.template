@@ -7,6 +7,5 @@
     "fps": 30,
     "scale": 60,
     "codec": "h264",
-    "screen_connections": 1,
     "log_level": "INFO"
 }

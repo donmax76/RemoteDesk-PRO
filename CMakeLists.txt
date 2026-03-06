@@ -63,6 +63,10 @@ target_link_libraries(RemoteDesktopHost PRIVATE
     user32
     gdi32
     ole32
+    mfplat
+    mfuuid
+    mf
+    strmiids
 )
 
 # Copy config template to output

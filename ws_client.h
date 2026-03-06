@@ -54,9 +54,13 @@ public:
         BOOL tcp_ka = TRUE;
         setsockopt(sock_, SOL_SOCKET, SO_KEEPALIVE, (const char*)&tcp_ka, sizeof(tcp_ka));
 
-        // Increase send buffer to 256KB to reduce blocking on large SCRN frames
-        int sndbuf = 256 * 1024;
+        // Increase send buffer to 1MB to reduce blocking on large SCRN frames
+        int sndbuf = 1024 * 1024;
         setsockopt(sock_, SOL_SOCKET, SO_SNDBUF, (const char*)&sndbuf, sizeof(sndbuf));
+
+        // Disable Nagle's algorithm for lower latency
+        BOOL nodelay = TRUE;
+        setsockopt(sock_, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
 
         addrinfo hints{}, *res{};
         hints.ai_family   = AF_INET;
@@ -248,8 +252,20 @@ private:
         frame.insert(frame.end(), mask, mask+4);
         size_t base = frame.size();
         frame.resize(base + len);
-        for (size_t i = 0; i < len; ++i)
-            frame[base+i] = payload[i] ^ mask[i%4];
+        // Fast XOR: process 4 bytes at a time using 32-bit mask word
+        uint8_t* dst = frame.data() + base;
+        uint32_t mask32;
+        memcpy(&mask32, mask, 4);
+        size_t i = 0;
+        size_t len4 = len & ~(size_t)3;  // round down to multiple of 4
+        for (; i < len4; i += 4) {
+            uint32_t src4;
+            memcpy(&src4, payload + i, 4);
+            src4 ^= mask32;
+            memcpy(dst + i, &src4, 4);
+        }
+        for (; i < len; ++i)
+            dst[i] = payload[i] ^ mask[i & 3];
         return send_raw_sync((const char*)frame.data(), (int)frame.size());
     }
 
