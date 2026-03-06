@@ -1,0 +1,3324 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RemoteDesk Pro</title>
+<style>
+/* ═══════════════════════════════════════════════════
+   DESIGN SYSTEM — Cyber Industrial Dark
+   Palette: #0a0c10 bg / #0d1117 panel / #161b22 card
+            #00d9ff accent / #00ff88 success / #ff4757 danger
+            #ffd32a warning / #c9d1d9 text
+   Font: "Space Mono" mono + "Barlow Condensed" display
+═══════════════════════════════════════════════════ */
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Barlow+Condensed:wght@300;400;600;700;800&display=swap');
+
+:root {
+  --bg:       #0a0c10;
+  --panel:    #0d1117;
+  --card:     #161b22;
+  --border:   #30363d;
+  --accent:   #00d9ff;
+  --accent2:  #7c3aed;
+  --success:  #00ff88;
+  --danger:   #ff4757;
+  --warn:     #ffd32a;
+  --text:     #c9d1d9;
+  --muted:    #6e7681;
+  --mono:     'Space Mono', monospace;
+  --display:  'Barlow Condensed', sans-serif;
+  --radius:   6px;
+  --glow:     0 0 20px rgba(0,217,255,0.15);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--panel); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+/* ── Top bar ── */
+#topbar {
+  height: 48px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 16px;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 100;
+}
+
+#topbar .logo {
+  font-family: var(--display);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  color: var(--accent);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+#topbar .logo span { color: var(--text); }
+
+.sep { width: 1px; height: 24px; background: var(--border); flex-shrink: 0; }
+
+#conn-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+#conn-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  transition: background .3s;
+}
+#conn-dot.online { background: var(--success); box-shadow: 0 0 6px var(--success); }
+#conn-dot.connecting { background: var(--warn); animation: pulse 1s infinite; }
+.host-status { font-size: 11px; color: var(--muted); margin-left: 6px; }
+.host-status.online { color: var(--success); }
+.host-status.offline { color: var(--danger); }
+
+@keyframes pulse { 0%,100%{ opacity:1 } 50%{ opacity:.3 } }
+
+.topbar-btn {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all .15s;
+  white-space: nowrap;
+}
+.topbar-btn:hover { border-color: var(--accent); color: var(--accent); }
+.topbar-btn.active { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 700; }
+.topbar-btn.danger { border-color: var(--danger); color: var(--danger); }
+.topbar-btn.success-btn { border-color: var(--success); color: var(--success); }
+
+#topbar .right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+#fps-counter { font-size: 11px; color: var(--muted); width: 60px; text-align: right; }
+#sys-info-bar { font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+/* ── Layout ── */
+#app {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Sidebar ── */
+#sidebar {
+  width: 52px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 0;
+  gap: 4px;
+  flex-shrink: 0;
+  transition: width .2s;
+  overflow: hidden;
+}
+#sidebar.expanded { width: 180px; }
+
+.nav-btn {
+  width: 40px;
+  height: 40px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--radius);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .15s;
+  font-size: 18px;
+  position: relative;
+  flex-shrink: 0;
+}
+.nav-btn:hover { background: var(--card); color: var(--text); }
+.nav-btn.active { background: rgba(0,217,255,.1); color: var(--accent); }
+.nav-btn .badge {
+  position: absolute;
+  top: 4px; right: 4px;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+/* ── Main content ── */
+#main {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Panels ── */
+.panel {
+  display: none;
+  flex: 1;
+  overflow: hidden;
+  flex-direction: column;
+}
+.panel.active { display: flex; }
+
+/* ══════════════════════════════════════════════════
+   SCREEN PANEL
+══════════════════════════════════════════════════ */
+#panel-screen {
+  background: #000;
+  position: relative;
+}
+
+#screen-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  cursor: default;
+}
+
+#screen-overlay {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  background: rgba(10,12,16,.85);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 6px 12px;
+  align-items: center;
+}
+#screen-overlay button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px;
+  border-radius: 4px;
+  transition: color .15s;
+}
+#screen-overlay button:hover { color: var(--accent); }
+#screen-overlay button.rec-active { color: var(--danger); animation: pulse 1s infinite; }
+
+.codec-select {
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  border-radius: var(--radius);
+  padding: 2px 6px;
+}
+
+#stream-stats {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  background: rgba(10,12,16,.8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 8px;
+  font-size: 10px;
+  color: var(--muted);
+  font-family: var(--mono);
+  line-height: 1.6;
+  pointer-events: none;
+}
+
+#no-stream {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  gap: 16px;
+}
+#no-stream .icon { font-size: 64px; opacity: .3; }
+#no-stream p { font-family: var(--display); font-size: 18px; letter-spacing: 2px; }
+
+/* ══════════════════════════════════════════════════
+   FILE MANAGER
+══════════════════════════════════════════════════ */
+#panel-files {
+  overflow: hidden;
+}
+
+.fm-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.fm-path {
+  flex: 1;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: var(--radius);
+  outline: none;
+}
+.fm-path:focus { border-color: var(--accent); }
+.fm-btn {
+  padding: 5px 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all .15s;
+}
+.fm-btn:hover { border-color: var(--accent); color: var(--accent); }
+.fm-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+
+.fm-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Drive/Bookmark sidebar */
+.fm-sidebar {
+  width: 160px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 8px;
+  flex-shrink: 0;
+}
+.fm-sidebar-section { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; padding: 4px 4px 2px; }
+.fm-drive-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 5px 6px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: left;
+  transition: background .15s;
+}
+.fm-drive-btn:hover { background: var(--card); }
+.fm-drive-btn .drive-icon { color: var(--accent); }
+
+/* File list */
+.fm-list-wrap {
+  flex: 1;
+  overflow-y: auto;
+}
+.fm-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.fm-table th {
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  position: sticky;
+  top: 0;
+  cursor: pointer;
+  user-select: none;
+}
+.fm-table th:hover { color: var(--text); }
+.fm-table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid rgba(48,54,61,.4);
+}
+.fm-row {
+  cursor: pointer;
+  transition: background .1s;
+}
+.fm-row:hover { background: rgba(22,27,34,.8); }
+.fm-row.selected { background: rgba(0,217,255,.08); }
+.fm-icon { font-size: 14px; }
+.fm-name { color: var(--text); }
+.fm-size, .fm-date, .fm-attr { color: var(--muted); font-size: 11px; }
+.fm-dir { color: var(--accent); }
+.fm-dir .fm-name { color: var(--accent); }
+
+/* Breadcrumb */
+.fm-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.fm-crumb {
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+.fm-crumb:hover { color: var(--accent); background: rgba(0,217,255,.05); }
+.fm-crumb.last { color: var(--text); pointer-events: none; }
+.fm-crumb-sep { color: var(--border); font-size: 10px; }
+
+/* Upload progress */
+.fm-transfer-bar {
+  height: 2px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+.fm-transfer-bar .fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+  transition: width .2s;
+  width: 0%;
+}
+
+/* Context menu */
+.ctx-menu {
+  position: fixed;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px;
+  z-index: 9999;
+  min-width: 160px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.5);
+}
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 12px;
+  transition: background .1s;
+}
+.ctx-item:hover { background: rgba(0,217,255,.1); color: var(--accent); }
+.ctx-item.danger:hover { background: rgba(255,71,87,.1); color: var(--danger); }
+.ctx-sep { height: 1px; background: var(--border); margin: 3px 0; }
+
+/* ══════════════════════════════════════════════════
+   PROCESS MANAGER
+══════════════════════════════════════════════════ */
+#panel-procs {
+  overflow: hidden;
+}
+
+.proc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.proc-search {
+  flex: 1;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: var(--radius);
+  outline: none;
+}
+.proc-search:focus { border-color: var(--accent); }
+
+.proc-table-wrap { flex: 1; overflow-y: auto; }
+.proc-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.proc-table th {
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  position: sticky;
+  top: 0;
+  cursor: pointer;
+  user-select: none;
+}
+.proc-table td {
+  padding: 4px 10px;
+  border-bottom: 1px solid rgba(48,54,61,.3);
+  font-size: 12px;
+}
+.proc-row { cursor: pointer; transition: background .1s; }
+.proc-row:hover { background: rgba(22,27,34,.8); }
+.proc-row.selected { background: rgba(0,217,255,.06); }
+.proc-mem { color: var(--muted); }
+.mem-bar {
+  display: inline-block;
+  height: 3px;
+  background: var(--accent);
+  border-radius: 2px;
+  opacity: .6;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+
+/* Launch dialog */
+.launch-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.launch-form-row { display: flex; gap: 8px; align-items: center; }
+.launch-form label { font-size: 11px; color: var(--muted); width: 80px; flex-shrink: 0; }
+.launch-input {
+  flex: 1;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  outline: none;
+}
+.launch-input:focus { border-color: var(--accent); }
+.launch-select {
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  outline: none;
+}
+
+/* ══════════════════════════════════════════════════
+   SERVICES PANEL
+══════════════════════════════════════════════════ */
+#panel-services { overflow: hidden; }
+
+.svc-table-wrap { flex: 1; overflow-y: auto; }
+.svc-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.svc-table th {
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  position: sticky;
+  top: 0;
+}
+.svc-table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid rgba(48,54,61,.3);
+  font-size: 12px;
+}
+.svc-row { cursor: pointer; transition: background .1s; }
+.svc-row:hover { background: rgba(22,27,34,.8); }
+
+.status-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+.status-running { background: rgba(0,255,136,.1); color: var(--success); border: 1px solid rgba(0,255,136,.3); }
+.status-stopped { background: rgba(255,71,87,.1); color: var(--danger); border: 1px solid rgba(255,71,87,.3); }
+.status-paused  { background: rgba(255,211,42,.1); color: var(--warn); border: 1px solid rgba(255,211,42,.3); }
+.status-unknown { background: rgba(110,118,129,.1); color: var(--muted); border: 1px solid var(--border); }
+
+.svc-actions { display: flex; gap: 4px; }
+.svc-action-btn {
+  padding: 2px 8px;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.svc-action-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ══════════════════════════════════════════════════
+   CONFIG EDITOR
+══════════════════════════════════════════════════ */
+#panel-config { overflow: hidden; }
+
+.config-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.config-path {
+  flex: 1;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: var(--radius);
+  outline: none;
+}
+.config-path:focus { border-color: var(--accent); }
+
+#config-editor {
+  flex: 1;
+  background: var(--card);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 12px;
+  border: none;
+  outline: none;
+  resize: none;
+  tab-size: 2;
+}
+
+.config-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 3px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+/* ══════════════════════════════════════════════════
+   TERMINAL PANEL
+══════════════════════════════════════════════════ */
+#panel-terminal { overflow: hidden; }
+
+.terminal-output {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.7;
+  background: #000;
+}
+.terminal-output .line-out { color: #b5cea8; }
+.terminal-output .line-err { color: var(--danger); }
+.terminal-output .line-cmd { color: var(--accent); }
+.terminal-output .line-info { color: var(--muted); }
+
+.terminal-input-row {
+  display: flex;
+  align-items: center;
+  padding: 6px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  gap: 8px;
+  flex-shrink: 0;
+}
+.term-prompt { color: var(--accent); white-space: nowrap; }
+.terminal-input {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  outline: none;
+}
+
+/* ══════════════════════════════════════════════════
+   DASHBOARD
+══════════════════════════════════════════════════ */
+#panel-dashboard { overflow-y: auto; padding: 16px; gap: 0; }
+
+.dash-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.dash-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  position: relative;
+  overflow: hidden;
+}
+.dash-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+}
+.dash-card-title {
+  font-family: var(--display);
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  margin-bottom: 8px;
+}
+.dash-card-value {
+  font-family: var(--display);
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1;
+}
+.dash-card-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.dash-card-icon {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  font-size: 28px;
+  opacity: .15;
+}
+
+.gauge-bar {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+.gauge-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+  transition: width .5s;
+}
+
+/* Log feed */
+.log-feed {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  height: 180px;
+  overflow-y: auto;
+  padding: 8px;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.log-entry { display: flex; gap: 8px; }
+.log-time { color: var(--muted); flex-shrink: 0; }
+.log-lvl-INFO  { color: var(--accent); }
+.log-lvl-WARN  { color: var(--warn); }
+.log-lvl-ERROR { color: var(--danger); }
+.log-lvl-OK    { color: var(--success); }
+
+/* ══════════════════════════════════════════════════
+   CONNECT MODAL
+══════════════════════════════════════════════════ */
+#modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.75);
+  backdrop-filter: blur(4px);
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#modal-overlay.hidden { display: none; }
+
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 28px;
+  width: 420px;
+  max-width: 95vw;
+  box-shadow: 0 24px 80px rgba(0,0,0,.6), var(--glow);
+  position: relative;
+}
+.modal-title {
+  font-family: var(--display);
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.modal-subtitle { font-size: 12px; color: var(--muted); margin-bottom: 24px; }
+
+.form-group { margin-bottom: 14px; }
+.form-label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+.form-input {
+  width: 100%;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  outline: none;
+  transition: border-color .15s;
+}
+.form-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(0,217,255,.1); }
+
+.form-row { display: flex; gap: 10px; }
+.form-row .form-group { flex: 1; }
+
+.btn-primary {
+  width: 100%;
+  padding: 10px;
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  font-family: var(--display);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all .15s;
+  margin-top: 8px;
+}
+.btn-primary:hover { opacity: .85; transform: translateY(-1px); }
+
+/* ══════════════════════════════════════════════════
+   NOTIFICATIONS
+══════════════════════════════════════════════════ */
+#notif-container {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+  max-width: 320px;
+}
+.notif {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  animation: notif-in .2s ease;
+  pointer-events: all;
+  border-left: 3px solid var(--accent);
+}
+.notif.success { border-left-color: var(--success); }
+.notif.error   { border-left-color: var(--danger); }
+.notif.warn    { border-left-color: var(--warn); }
+@keyframes notif-in { from{ opacity:0; transform:translateX(20px) } to{ opacity:1; transform:none } }
+
+/* ══════════════════════════════════════════════════
+   MISC UTILS
+══════════════════════════════════════════════════ */
+.hidden { display: none !important; }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flex-center { display: flex; align-items: center; justify-content: center; }
+.text-accent { color: var(--accent); }
+.text-success { color: var(--success); }
+.text-danger { color: var(--danger); }
+.text-warn { color: var(--warn); }
+.text-muted { color: var(--muted); }
+
+/* Thin loading bar */
+.loading-bar {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent2) 50%, var(--accent) 100%);
+  background-size: 200%;
+  animation: loading-move 1.5s infinite;
+}
+@keyframes loading-move { 0%{ background-position:0% } 100%{ background-position:200% } }
+
+/* Panel header */
+.panel-header {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  gap: 12px;
+  flex-shrink: 0;
+}
+.panel-title {
+  font-family: var(--display);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.panel-actions { display: flex; gap: 6px; margin-left: auto; }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════ TOP BAR ══ -->
+<div id="topbar">
+  <div class="logo">Remote<span>Desk</span> <span style="color:var(--accent2)">PRO</span></div>
+  <div class="sep"></div>
+  <div id="conn-status">
+    <div id="conn-dot"></div>
+    <span id="conn-label">DISCONNECTED</span>
+    <span id="host-status" class="host-status"></span>
+  </div>
+  <div class="sep"></div>
+  <span id="sys-info-bar">—</span>
+  <div class="right">
+    <span id="fps-counter"></span>
+    <button class="topbar-btn" id="btn-connect">CONNECT</button>
+    <button class="topbar-btn danger hidden" id="btn-disconnect">DISCONNECT</button>
+    <button class="topbar-btn" id="btn-stream-toggle">▶ STREAM</button>
+    <button class="topbar-btn" id="btn-record" title="Record">⏺ REC <span id="rec-duration"></span></button>
+    <button class="topbar-btn" id="btn-fullscreen">⛶</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ MAIN ══ -->
+<div id="app">
+
+  <!-- Sidebar -->
+  <div id="sidebar">
+    <button class="nav-btn active" data-panel="dashboard" title="Dashboard">⊞</button>
+    <button class="nav-btn" data-panel="screen" title="Screen">🖥</button>
+    <button class="nav-btn" data-panel="files" title="Files">📁</button>
+    <button class="nav-btn" data-panel="procs" title="Processes">⚙</button>
+    <button class="nav-btn" data-panel="services" title="Services">🔧</button>
+    <button class="nav-btn" data-panel="config" title="Config Editor">📝</button>
+    <button class="nav-btn" data-panel="terminal" title="Terminal">$_</button>
+    <button class="nav-btn" data-panel="settings" title="Settings">🔩</button>
+  </div>
+
+  <!-- Main Content -->
+  <div id="main">
+
+    <!-- ── DASHBOARD ── -->
+    <div id="panel-dashboard" class="panel active" style="flex-direction:column;">
+      <div class="panel-header">
+        <span class="panel-title">Dashboard</span>
+        <div class="panel-actions">
+          <button class="fm-btn" onclick="refreshDashboard()">↻ Refresh</button>
+        </div>
+      </div>
+      <div style="flex:1; overflow-y:auto; padding:16px;">
+        <div class="dash-grid">
+          <div class="dash-card">
+            <div class="dash-card-icon">💾</div>
+            <div class="dash-card-title">RAM Used</div>
+            <div class="dash-card-value" id="d-ram-pct">—</div>
+            <div class="dash-card-sub" id="d-ram-info">— MB used</div>
+            <div class="gauge-bar"><div class="gauge-fill" id="d-ram-bar" style="width:0%"></div></div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-icon">🔲</div>
+            <div class="dash-card-title">CPU</div>
+            <div class="dash-card-value" id="d-cpu-pct">—</div>
+            <div class="dash-card-sub">Processor load</div>
+            <div class="gauge-bar"><div class="gauge-fill" id="d-cpu-bar" style="width:0%"></div></div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-icon">🖼</div>
+            <div class="dash-card-title">GPU</div>
+            <div class="dash-card-value" id="d-gpu-pct">—</div>
+            <div class="dash-card-sub">Graphics load</div>
+            <div class="gauge-bar"><div class="gauge-fill" id="d-gpu-bar" style="width:0%"></div></div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-icon">⏱</div>
+            <div class="dash-card-title">Uptime</div>
+            <div class="dash-card-value" id="d-uptime">—</div>
+            <div class="dash-card-sub" id="d-uptime-sub">—</div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-icon">🖥</div>
+            <div class="dash-card-title">Hostname</div>
+            <div class="dash-card-value" id="d-hostname" style="font-size:20px">—</div>
+            <div class="dash-card-sub" id="d-username">User: —</div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-icon">📡</div>
+            <div class="dash-card-title">Stream FPS</div>
+            <div class="dash-card-value" id="d-fps">—</div>
+            <div class="dash-card-sub" id="d-codec">Codec: —</div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-icon">⚙</div>
+            <div class="dash-card-title">Processes</div>
+            <div class="dash-card-value" id="d-proc-count">—</div>
+            <div class="dash-card-sub">Running processes</div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-icon">🔧</div>
+            <div class="dash-card-title">Services</div>
+            <div class="dash-card-value" id="d-svc-count">—</div>
+            <div class="dash-card-sub" id="d-svc-running">— running</div>
+          </div>
+        </div>
+        <div class="panel-title" style="font-size:13px; margin-bottom:10px;">ACTIVITY LOG</div>
+        <div class="log-feed" id="log-feed"></div>
+        <div style="height:16px;"></div>
+        <div class="panel-title" style="font-size:13px; margin-bottom:10px;">QUICK ACTIONS</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="fm-btn" onclick="switchPanel('screen')">▶ Screen Stream</button>
+          <button class="fm-btn" onclick="switchPanel('files')">📁 File Manager</button>
+          <button class="fm-btn" onclick="refreshProcesses()">⚙ Refresh Processes</button>
+          <button class="fm-btn" onclick="refreshServices()">🔧 Refresh Services</button>
+          <button class="fm-btn" onclick="sendCmd({cmd:'proc_launch',exe:'taskmgr.exe',args:'',elevate:'normal'})">🚀 Open Task Manager</button>
+          <button class="fm-btn" onclick="sendCmd({cmd:'proc_launch',exe:'explorer.exe',args:'',elevate:'normal'})">📂 Open Explorer</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SCREEN ── -->
+    <div id="panel-screen" class="panel">
+      <canvas id="screen-canvas"></canvas>
+      <div id="no-stream">
+        <div class="icon">🖥</div>
+        <p>SCREEN STREAM</p>
+        <small class="text-muted">Connect and press ▶ STREAM to start</small>
+      </div>
+      <div id="stream-stats" class="hidden">
+        FPS: <span id="st-fps">0</span><br>
+        RES: <span id="st-res">—</span><br>
+        BW: <span id="st-bw">—</span>
+      </div>
+      <div id="screen-overlay">
+        <button title="Quality -" onclick="adjustQuality(-10)">🔽</button>
+        <span id="quality-disp" style="font-size:11px;min-width:28px;text-align:center">50%</span>
+        <button title="Quality +" onclick="adjustQuality(10)">🔼</button>
+        <div class="sep" style="height:16px;"></div>
+        <button title="FPS -" onclick="adjustFps(-5)">🐢</button>
+        <span id="fps-disp" style="font-size:11px;color:var(--muted);min-width:30px;text-align:center">25</span>
+        <button title="FPS +" onclick="adjustFps(5)">🚀</button>
+        <div class="sep" style="height:16px;"></div>
+        <button title="Scale -" onclick="adjustScale(-10)">−</button>
+        <span id="scale-disp" style="font-size:11px;min-width:28px;text-align:center">60%</span>
+        <button title="Scale +" onclick="adjustScale(10)">+</button>
+        <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;color:var(--muted);">
+          <input type="checkbox" id="stream-compressed" onchange="toggleCompressed(this.checked)" /> Compressed
+        </label>
+        <div class="sep" style="height:16px;"></div>
+        <button title="Fit/Fill" onclick="toggleFit()" id="btn-fit">⊡</button>
+        <button title="Screenshot" onclick="takeScreenshot()">📷</button>
+        <button title="Record" id="btn-rec-overlay" onclick="toggleRecording()">⏺</button>
+        <button title="Fullscreen" onclick="requestFullscreen()">⛶</button>
+      </div>
+      <div class="rec-settings" style="margin-top:8px;padding:8px;background:var(--bg2);border-radius:6px;font-size:12px;">
+        <span class="text-muted" style="font-size:11px;">Recording: WebM/MP4. When you stop — Chrome/Edge: “Save as” dialog (you choose folder); other browsers: file goes to Downloads.</span>
+        <div id="rec-last-path" style="margin-top:8px;padding:6px 8px;background:var(--panel);border-radius:4px;color:var(--accent);font-size:12px;word-break:break-all;min-height:20px;"></div>
+        <div id="rec-where-hint" style="margin-top:4px;font-size:11px;color:var(--muted);display:none;"></div>
+      </div>
+    </div>
+
+    <!-- ── FILES ── -->
+    <div id="panel-files" class="panel" style="flex-direction:column;">
+      <div class="fm-toolbar">
+        <span class="panel-title" style="font-size:13px;">FILES</span>
+        <button class="fm-btn" id="btn-up-dir" onclick="goUpDir()" title="Up">⬆</button>
+        <input class="fm-path" id="fm-path-input" value="C:\\" placeholder="Path..." onkeydown="if(event.key==='Enter')navigateTo(this.value)" />
+        <button class="fm-btn" onclick="navigateTo(document.getElementById('fm-path-input').value)">GO</button>
+        <button class="fm-btn" onclick="refreshFiles()">↻</button>
+        <div class="sep"></div>
+        <button class="fm-btn" onclick="newFolder()">+ Folder</button>
+        <button class="fm-btn" id="btn-upload" onclick="uploadFile()">⬆ Upload</button>
+        <button class="fm-btn" id="btn-download-sel" onclick="downloadSelected()">⬇ Download</button>
+        <button class="fm-btn" id="btn-copy-sel" onclick="copySelected()">📋 Copy to...</button>
+        <button class="fm-btn danger" id="btn-delete-sel" onclick="deleteSelected()">🗑 Delete</button>
+        <input type="file" id="upload-input" class="hidden" multiple onchange="handleUpload(this)" />
+      </div>
+      <div class="fm-breadcrumb" id="fm-breadcrumb"></div>
+      <div class="fm-transfer-bar"><div class="fill" id="fm-progress"></div></div>
+      <div class="fm-body">
+        <div class="fm-sidebar">
+          <div class="fm-sidebar-section">Drives</div>
+          <div id="fm-drives"></div>
+          <div class="fm-sidebar-section" style="margin-top:8px;">Quick</div>
+          <button class="fm-drive-btn" onclick="navigateTo('C:\\Users')"><span class="drive-icon">👤</span>Users</button>
+          <button class="fm-drive-btn" onclick="navigateTo('C:\\Windows')"><span class="drive-icon">🪟</span>Windows</button>
+          <button class="fm-drive-btn" onclick="navigateTo('C:\\Program Files')"><span class="drive-icon">📦</span>Programs</button>
+          <button class="fm-drive-btn" onclick="navigateTo('C:\\Temp')"><span class="drive-icon">🗂</span>Temp</button>
+        </div>
+        <div class="fm-list-wrap">
+          <table class="fm-table">
+            <thead>
+              <tr>
+                <th style="width:30px;"><input type="checkbox" id="fm-select-all" onchange="toggleSelectAll(this.checked)" /></th>
+                <th onclick="sortFiles('name')">Name ↕</th>
+                <th onclick="sortFiles('size')" style="width:100px;">Size ↕</th>
+                <th onclick="sortFiles('date')" style="width:160px;">Modified ↕</th>
+                <th style="width:80px;">Attr</th>
+              </tr>
+            </thead>
+            <tbody id="fm-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="fm-status" style="padding:4px 12px;font-size:11px;color:var(--muted);background:var(--panel);border-top:1px solid var(--border);">Ready</div>
+    </div>
+
+    <!-- ── PROCESSES ── -->
+    <div id="panel-procs" class="panel" style="flex-direction:column;">
+      <div class="proc-toolbar">
+        <span class="panel-title" style="font-size:13px;">PROCESSES</span>
+        <input class="proc-search" id="proc-search" placeholder="Filter by name..." oninput="filterProcesses(this.value)" />
+        <button class="fm-btn" onclick="refreshProcesses()">↻ Refresh</button>
+        <button class="fm-btn danger" onclick="killSelected()">Kill</button>
+      </div>
+      <div class="proc-table-wrap">
+        <table class="proc-table">
+          <thead>
+            <tr>
+              <th style="width:30px;"><input type="checkbox" /></th>
+              <th onclick="sortProcs('pid')">PID</th>
+              <th onclick="sortProcs('name')">Name</th>
+              <th onclick="sortProcs('memory')" style="width:120px;">Memory</th>
+              <th onclick="sortProcs('threads')" style="width:70px;">Threads</th>
+              <th style="width:80px;">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="proc-body"></tbody>
+        </table>
+      </div>
+      <!-- Launch form -->
+      <div class="launch-form">
+        <div style="font-family:var(--display);font-size:13px;font-weight:700;color:var(--accent);letter-spacing:2px;text-transform:uppercase;margin-bottom:4px;">LAUNCH PROGRAM</div>
+        <div class="launch-form-row">
+          <label class="form-label">Executable</label>
+          <input class="launch-input" id="launch-exe" placeholder="notepad.exe or full path..." />
+          <button class="fm-btn" onclick="browseExe()">Browse</button>
+        </div>
+        <div class="launch-form-row">
+          <label class="form-label">Arguments</label>
+          <input class="launch-input" id="launch-args" placeholder="Optional arguments..." />
+          <select class="launch-select" id="launch-elevate">
+            <option value="normal">Normal</option>
+            <option value="admin">As Admin</option>
+            <option value="system">As System</option>
+          </select>
+          <button class="fm-btn success-btn" onclick="launchProgram()">🚀 Launch</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SERVICES ── -->
+    <div id="panel-services" class="panel" style="flex-direction:column;">
+      <div class="panel-header">
+        <span class="panel-title">Services</span>
+        <input class="proc-search" id="svc-search" style="flex:1;max-width:300px;" placeholder="Filter services..." oninput="filterServices(this.value)" />
+        <div class="panel-actions">
+          <button class="fm-btn" onclick="refreshServices()">↻ Refresh</button>
+        </div>
+      </div>
+      <div class="svc-table-wrap">
+        <table class="svc-table">
+          <thead>
+            <tr>
+              <th onclick="sortSvcs('name')">Service Name</th>
+              <th onclick="sortSvcs('display')">Display Name</th>
+              <th onclick="sortSvcs('status')" style="width:100px;">Status</th>
+              <th onclick="sortSvcs('start')" style="width:100px;">Start Type</th>
+              <th style="width:180px;">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="svc-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── CONFIG EDITOR ── -->
+    <div id="panel-config" class="panel" style="flex-direction:column;">
+      <div class="config-toolbar">
+        <span class="panel-title" style="font-size:13px;">CONFIG EDITOR</span>
+        <input class="config-path" id="config-path-input" placeholder="C:\path\to\config.ini" />
+        <button class="fm-btn" onclick="loadConfigFile()">Load</button>
+        <button class="fm-btn success-btn" onclick="saveConfigFile()">💾 Save</button>
+        <button class="fm-btn" onclick="formatJson()">{ } Format</button>
+        <button class="fm-btn" onclick="findInEditor()">🔍 Find</button>
+        <button class="fm-btn danger" onclick="clearEditor()">Clear</button>
+      </div>
+      <!-- Recently opened -->
+      <div id="recent-configs" style="padding:4px 12px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;gap:8px;flex-shrink:0;align-items:center;">
+        <span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;">Recent:</span>
+        <div id="recent-list" style="display:flex;gap:6px;"></div>
+      </div>
+      <textarea id="config-editor" spellcheck="false" placeholder="Load a config file to edit..."></textarea>
+      <div class="config-statusbar">
+        <span id="cfg-lines">Lines: 0</span>
+        <span id="cfg-chars">Chars: 0</span>
+        <span id="cfg-encoding">UTF-8</span>
+        <span id="cfg-modified" style="color:var(--warn);display:none;">● Modified</span>
+      </div>
+    </div>
+
+    <!-- ── TERMINAL ── -->
+    <div id="panel-terminal" class="panel" style="flex-direction:column;">
+      <div class="panel-header">
+        <span class="panel-title">Terminal</span>
+        <div class="panel-actions">
+          <button class="fm-btn" onclick="clearTerminal()">Clear</button>
+        </div>
+      </div>
+      <div class="terminal-output" id="term-output"></div>
+      <div class="terminal-input-row">
+        <span class="term-prompt" id="term-prompt">C:\&gt;</span>
+        <input class="terminal-input" id="term-input" placeholder="Enter command..." onkeydown="handleTermKey(event)" />
+      </div>
+    </div>
+
+    <!-- ── SETTINGS ── -->
+    <div id="panel-settings" class="panel" style="flex-direction:column;">
+      <div class="panel-header">
+        <span class="panel-title">Settings</span>
+      </div>
+      <div style="flex:1; overflow-y:auto; padding:16px;">
+        <div class="settings-block" style="margin-bottom:20px;">
+          <div class="panel-title" style="font-size:12px; margin-bottom:8px; color:var(--muted);">Save paths — choose folder (Chrome/Edge need HTTPS or localhost)</div>
+          <div id="settings-secure-warn" style="display:none; padding:8px; background:rgba(255,71,87,0.15); border-radius:6px; font-size:12px; margin-bottom:10px; color:var(--danger);">
+            Folder picker works only on <b>HTTPS</b> or <b>localhost</b>. Open this page as https://your-server/ or use Port 8080 with a tunnel.
+          </div>
+          <div class="form-row" style="align-items:center; margin-bottom:10px;">
+            <label class="form-label" style="min-width:200px;">Folder for file/folder downloads</label>
+            <button type="button" class="fm-btn" id="btn-download-folder" onclick="pickDownloadFolder()">Choose folder</button>
+            <button type="button" class="fm-btn" id="btn-download-folder-clear" onclick="clearDownloadFolder()">Clear</button>
+            <span id="settings-download-path" style="font-size:12px; color:var(--muted); margin-left:8px;">Not set</span>
+          </div>
+          <div class="form-row" style="align-items:center;">
+            <label class="form-label" style="min-width:200px;">Folder for stream recordings</label>
+            <button type="button" class="fm-btn" id="btn-recording-folder" onclick="pickRecordingFolder()">Choose folder</button>
+            <button type="button" class="fm-btn" id="btn-recording-folder-clear" onclick="clearRecordingFolder()">Clear</button>
+            <span id="settings-recording-path" style="font-size:12px; color:var(--muted); margin-left:8px;">Not set</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<!-- ══════════════════════════════════════════ CONNECT MODAL ══ -->
+<div id="modal-overlay">
+  <div class="modal">
+    <div class="modal-title" style="color:var(--accent)">🖥 RemoteDesk PRO</div>
+    <div class="modal-subtitle">Connect to your VPS relay server to begin remote monitoring</div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Server (same as page address)</label>
+        <input class="form-input" id="in-server" placeholder="IP or hostname" />
+      </div>
+      <div class="form-group" style="max-width:90px;">
+        <label class="form-label">Port</label>
+        <input class="form-input" id="in-port" placeholder="80" title="80 via nginx; 8080 = direct (use if connection fails)" />
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:-6px;margin-bottom:10px;">If you see “Sec-WebSocket-Key” or “HTTP/1.0” in server logs: set Port to <b>8080</b>, then on the server run <code style="font-size:10px;">ufw allow 8080/tcp && ufw reload</code>.</div>
+    <div class="form-group">
+      <label class="form-label">Room Token</label>
+      <input class="form-input" id="in-token" placeholder="my-room-token-123" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Password</label>
+      <input class="form-input" id="in-pass" type="password" placeholder="Optional room password" />
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+      <input type="checkbox" id="in-ssl" />
+      <label for="in-ssl" style="font-size:12px;color:var(--muted);">Use WSS (SSL)</label>
+    </div>
+    <button type="button" class="btn-primary" id="btn-modal-connect">⚡ CONNECT</button>
+    <div id="modal-error" style="color:var(--danger);font-size:12px;margin-top:10px;min-height:16px;"></div>
+  </div>
+</div>
+
+<!-- Notifications -->
+<div id="notif-container"></div>
+
+<!-- Context menu -->
+<div class="ctx-menu hidden" id="ctx-menu"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════════════
+const state = {
+  ws: null,
+  connected: false,
+  hostOnline: false,
+  streaming: false,
+  recording: false,
+  recordingStartTime: 0,
+  recordingDurationTimer: null,
+  recordingLastPath: '',
+  recordedFrames: [],
+  recordingStartMs: 0,
+  recordingCanvas: null,
+  recordingCtx: null,
+  recordingRecorder: null,
+  recordingChunks: [],
+  wantDisconnect: false,
+  reconnectTimer: null,
+  reconnectDelay: 2000,
+  quality: 50,
+  fps: 25,
+  scale: 60,
+  compressed: false,
+  codec: 'jpeg',
+  // File manager
+  currentPath: 'C:\\',
+  selectedFiles: new Set(),
+  fileList: [],
+  fileSortKey: 'name',
+  fileSortAsc: true,
+  // Processes
+  processes: [],
+  selectedPid: null,
+  procSortKey: 'name',
+  procSortAsc: true,
+  // Services
+  services: [],
+  svcSortKey: 'name',
+  svcSortAsc: true,
+  // Requests
+  pendingReqs: {},
+  reqIdCounter: 0,
+  pendingFileChunkQueue: [],  // queue of {resolve, reject, timeoutId} for pipelined downloads
+  // WebRTC: stream over UDP (separate from WebSocket used for files/commands)
+  streamWs: null,         // separate WS for SCRN binary frames only
+  streamDc: null,
+  streamOverWebRTC: false,
+  webrtcIceQueue: [],
+  // FPS counting
+  frameCount: 0,
+  lastFpsTime: Date.now(),
+  currentFps: 0,
+  streamBytesThisSecond: 0,
+  streamBwDisplay: '0 KB/s',
+  // Recent configs
+  recentConfigs: [],
+  termHistory: [],
+  termHistIdx: -1,
+  // Save paths (FileSystemDirectoryHandle — only in memory, Chrome/Edge)
+  downloadDirHandle: null,
+  recordingDirHandle: null,
+};
+
+// ═══════════════════════════════════════════════════════════════
+//  LOGGER
+// ═══════════════════════════════════════════════════════════════
+function addLog(msg, level='INFO') {
+  const feed = document.getElementById('log-feed');
+  const now = new Date().toLocaleTimeString();
+  const el = document.createElement('div');
+  el.className = 'log-entry';
+  el.innerHTML = `<span class="log-time">${now}</span><span class="log-lvl-${level}">[${level}]</span><span>${escHtml(msg)}</span>`;
+  feed.appendChild(el);
+  // Keep max 200 entries
+  while (feed.children.length > 200) feed.removeChild(feed.firstChild);
+  feed.scrollTop = feed.scrollHeight;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  NOTIFICATIONS
+// ═══════════════════════════════════════════════════════════════
+function notify(msg, type='info', duration=3500) {
+  const c = document.getElementById('notif-container');
+  const el = document.createElement('div');
+  el.className = `notif ${type}`;
+  el.innerHTML = `<span>${escHtml(msg)}</span>`;
+  c.appendChild(el);
+  setTimeout(() => { el.style.opacity='0'; el.style.transition='opacity .3s'; setTimeout(()=>el.remove(), 300); }, duration);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  PANEL NAVIGATION
+// ═══════════════════════════════════════════════════════════════
+function switchPanel(name) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  const panel = document.getElementById('panel-'+name);
+  if (panel) panel.classList.add('active');
+  const btn = document.querySelector(`.nav-btn[data-panel="${name}"]`);
+  if (btn) btn.classList.add('active');
+  // Lazy load on switch
+  if (name === 'files' && state.connected && state.hostOnline) { refreshFiles(); loadDrives(); }
+  if (name === 'procs' && state.connected && state.hostOnline) refreshProcesses();
+  if (name === 'services' && state.connected && state.hostOnline) refreshServices();
+  if (name === 'dashboard' && state.connected && state.hostOnline) refreshDashboard();
+  if (name === 'screen') {
+    const q = document.getElementById('quality-disp'); if (q) q.textContent = state.quality + '%';
+    const f = document.getElementById('fps-disp'); if (f) f.textContent = state.fps;
+    const s = document.getElementById('scale-disp'); if (s) s.textContent = state.scale + '%';
+    const c = document.getElementById('stream-compressed'); if (c) c.checked = state.compressed;
+  }
+  if (name === 'settings') {
+    const w = document.getElementById('settings-secure-warn');
+    if (w) w.style.display = (typeof window.isSecureContext !== 'undefined' && !window.isSecureContext) ? 'block' : 'none';
+  }
+}
+
+document.querySelectorAll('.nav-btn[data-panel]').forEach(btn => {
+  btn.onclick = () => switchPanel(btn.dataset.panel);
+});
+
+// ─── Persist folder handles via IndexedDB ────────────────────────────────────
+// FileSystemDirectoryHandle cannot be stored in localStorage (it's an object),
+// but IndexedDB supports storing structured objects including handles.
+const DB_NAME = 'remotedesk_settings', DB_STORE = 'handles', DB_VER = 1;
+
+function openSettingsDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VER);
+    req.onupgradeneeded = e => e.target.result.createObjectStore(DB_STORE);
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveHandleToDB(key, handle) {
+  try {
+    const db = await openSettingsDB();
+    const tx = db.transaction(DB_STORE, 'readwrite');
+    tx.objectStore(DB_STORE).put(handle, key);
+    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
+    db.close();
+  } catch(e) { console.warn('saveHandleToDB:', e); }
+}
+
+async function loadHandleFromDB(key) {
+  try {
+    const db = await openSettingsDB();
+    const tx = db.transaction(DB_STORE, 'readonly');
+    const handle = await new Promise((res, rej) => {
+      const r = tx.objectStore(DB_STORE).get(key);
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    db.close();
+    return handle || null;
+  } catch(e) { return null; }
+}
+
+async function deleteHandleFromDB(key) {
+  try {
+    const db = await openSettingsDB();
+    const tx = db.transaction(DB_STORE, 'readwrite');
+    tx.objectStore(DB_STORE).delete(key);
+    db.close();
+  } catch(e) {}
+}
+
+// Restore saved handles on page load (ask browser to re-verify permission)
+async function restoreSavedFolders() {
+  const dlHandle = await loadHandleFromDB('downloadDir');
+  const recHandle = await loadHandleFromDB('recordingDir');
+  if (dlHandle) {
+    // Check if we still have permission (may need user gesture to re-grant)
+    try {
+      const perm = await dlHandle.queryPermission({ mode: 'readwrite' });
+      if (perm === 'granted') {
+        state.downloadDirHandle = dlHandle;
+      } else {
+        // Permission lost — clear saved handle
+        await deleteHandleFromDB('downloadDir');
+      }
+    } catch(e) { await deleteHandleFromDB('downloadDir'); }
+  }
+  if (recHandle) {
+    try {
+      const perm = await recHandle.queryPermission({ mode: 'readwrite' });
+      if (perm === 'granted') {
+        state.recordingDirHandle = recHandle;
+      } else {
+        await deleteHandleFromDB('recordingDir');
+      }
+    } catch(e) { await deleteHandleFromDB('recordingDir'); }
+  }
+  updateSettingsPathDisplay();
+}
+
+// Call on startup
+restoreSavedFolders();
+
+// ─── Settings: save paths (File System Access API) ─────────────────────────
+function updateSettingsPathDisplay() {
+  const elD = document.getElementById('settings-download-path');
+  const elR = document.getElementById('settings-recording-path');
+  if (elD) elD.textContent = state.downloadDirHandle ? state.downloadDirHandle.name : 'Not set';
+  if (elR) elR.textContent = state.recordingDirHandle ? state.recordingDirHandle.name : 'Not set';
+}
+
+async function pickDownloadFolder() {
+  if (typeof window.isSecureContext !== 'undefined' && !window.isSecureContext) {
+    notify('Folder picker requires HTTPS or localhost. Open the site via https://...', 'error');
+    return;
+  }
+  if (typeof window.showDirectoryPicker !== 'function') {
+    notify('Choose folder is supported in Chrome/Edge (HTTPS or localhost).', 'warn');
+    return;
+  }
+  try {
+    state.downloadDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    await saveHandleToDB('downloadDir', state.downloadDirHandle);
+    updateSettingsPathDisplay();
+    notify('Downloads will be saved to: ' + state.downloadDirHandle.name + ' (remembered)', 'success');
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    const msg = e.message || String(e);
+    if (e.name === 'SecurityError' || /secure|https|origin/i.test(msg))
+      notify('Folder picker needs HTTPS or localhost. Open page via https://...', 'error');
+    else
+      notify('Failed to pick folder: ' + msg, 'error');
+  }
+}
+
+function clearDownloadFolder() {
+  state.downloadDirHandle = null;
+  deleteHandleFromDB('downloadDir');
+  updateSettingsPathDisplay();
+  notify('Download folder cleared', 'info');
+}
+
+async function pickRecordingFolder() {
+  if (typeof window.isSecureContext !== 'undefined' && !window.isSecureContext) {
+    notify('Folder picker requires HTTPS or localhost. Open the site via https://...', 'error');
+    return;
+  }
+  if (typeof window.showDirectoryPicker !== 'function') {
+    notify('Choose folder is supported in Chrome/Edge (HTTPS or localhost).', 'warn');
+    return;
+  }
+  try {
+    state.recordingDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    await saveHandleToDB('recordingDir', state.recordingDirHandle);
+    updateSettingsPathDisplay();
+    notify('Recordings will be saved to: ' + state.recordingDirHandle.name + ' (remembered)', 'success');
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    const msg = e.message || String(e);
+    if (e.name === 'SecurityError' || /secure|https|origin/i.test(msg))
+      notify('Folder picker needs HTTPS or localhost. Open page via https://...', 'error');
+    else
+      notify('Failed to pick folder: ' + msg, 'error');
+  }
+}
+
+function clearRecordingFolder() {
+  state.recordingDirHandle = null;
+  deleteHandleFromDB('recordingDir');
+  updateSettingsPathDisplay();
+  notify('Recording folder cleared', 'info');
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  WEBSOCKET
+// ═══════════════════════════════════════════════════════════════
+function connectToServer() {
+  const errEl = document.getElementById('modal-error');
+  if (errEl) errEl.textContent = '';
+  let server, port, token, pass, ssl;
+  try {
+    server = document.getElementById('in-server').value.trim();
+    const portEl = document.getElementById('in-port').value.trim();
+    const defaultPort = (window.location.port && window.location.port !== '') ? window.location.port : (window.location.protocol === 'https:' ? '443' : '80');
+    port   = portEl || defaultPort;
+    token  = document.getElementById('in-token').value.trim();
+    pass   = document.getElementById('in-pass') ? document.getElementById('in-pass').value : '';
+    ssl    = document.getElementById('in-ssl') ? document.getElementById('in-ssl').checked : false;
+  } catch (e) {
+    if (errEl) errEl.textContent = 'Error: ' + (e.message || e);
+    return;
+  }
+  if (!server || !token) {
+    if (errEl) errEl.textContent = 'Server and token are required';
+    return;
+  }
+
+  if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
+  state.wantDisconnect = false;
+
+  const proto = ssl ? 'wss' : 'ws';
+  const url = `${proto}://${server}:${port}/client`;
+  setConnStatus('connecting');
+  if (errEl) errEl.textContent = 'Connecting...';
+
+  // Null out handlers on old ws BEFORE closing so its onclose doesn't trigger another reconnect
+  if (state.ws) {
+    const old = state.ws;
+    old.onclose = null;
+    old.onerror = null;
+    old.onmessage = null;
+    state.ws = null;
+    try { old.close(); } catch(e) {}
+  }
+
+  const ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+  state.ws = ws;
+
+  ws.onopen = () => {
+    const auth = { cmd: 'auth', token, password: pass, role: 'client' };
+    ws.send(JSON.stringify(auth));
+  };
+
+  ws.onmessage = (ev) => {
+    if (ev.data instanceof ArrayBuffer) {
+      handleBinary(ev.data); // only FILE chunks arrive here now, not SCRN
+    } else {
+      handleText(ev.data);
+    }
+  };
+
+  ws.onclose = () => {
+    // If a new connection was already started, ignore this stale onclose
+    if (state.ws !== ws && state.ws !== null) return;
+
+    state.connected = false;
+    state.streaming = false;
+    state.hostOnline = false;
+    state.ws = null;
+    // Fully clean up WebRTC so startStream() works fresh after reconnect
+    if (state.streamDc) { try { state.streamDc.close(); } catch(e){} state.streamDc = null; }
+    if (state.streamPc) { try { state.streamPc.close(); } catch(e){} state.streamPc = null; }
+    if (state.streamWs) { try { state.streamWs.close(); } catch(e){} state.streamWs = null; }
+    state.streamOverWebRTC = false;
+    state.webrtcIceQueue = [];
+    setConnStatus('disconnected');
+    addLog('Disconnected from server', 'WARN');
+    document.getElementById('btn-connect').classList.remove('hidden');
+    document.getElementById('btn-disconnect').classList.add('hidden');
+    document.getElementById('btn-stream-toggle').textContent = '▶ STREAM';
+    document.getElementById('btn-stream-toggle').classList.remove('active');
+    if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+    if (!state.wantDisconnect && (document.getElementById('in-server').value.trim() && document.getElementById('in-token').value.trim())) {
+      // Exponential backoff: 2s, 4s, 8s, ... max 30s
+      state.reconnectDelay = Math.min((state.reconnectDelay || 2000) * (state.connected ? 1 : 1.5), 30000);
+      if (state.connected) state.reconnectDelay = 2000; // reset on clean disconnect
+      const delay = Math.round(state.reconnectDelay);
+      notify(`Connection lost. Reconnecting in ${Math.round(delay/1000)}s...`, 'info', delay);
+      state.reconnectTimer = setTimeout(() => {
+        state.reconnectTimer = null;
+        state.wantDisconnect = false;
+        connectToServer();
+      }, delay);
+    } else {
+      notify('Disconnected', 'error');
+    }
+    state.wantDisconnect = false;
+  };
+
+  ws.onerror = () => {
+    if (errEl) errEl.textContent = 'Connection failed. Try Port 8080 (direct) if behind a proxy.';
+    setConnStatus('disconnected');
+  };
+}
+
+function handleText(raw) {
+  let msg;
+  try { msg = JSON.parse(raw); } catch { return; }
+
+  // Auth ok
+  if (msg.event === 'auth_ok') {
+    state.connected = true;
+    state.reconnectDelay = 2000; // reset backoff on success
+    state.hostOnline = msg.host_online;
+    try {
+      localStorage.setItem('rdp_server', document.getElementById('in-server').value.trim());
+      localStorage.setItem('rdp_port', document.getElementById('in-port').value.trim());
+      localStorage.setItem('rdp_token', document.getElementById('in-token').value.trim());
+      localStorage.setItem('rdp_password', document.getElementById('in-pass').value);
+    } catch (e) {}
+    setConnStatus('online');
+    document.getElementById('modal-overlay').classList.add('hidden');
+    document.getElementById('btn-connect').classList.add('hidden');
+    document.getElementById('btn-disconnect').classList.remove('hidden');
+    addLog(`Connected. Host: ${msg.host_online ? 'ONLINE' : 'OFFLINE'}`, msg.host_online ? 'OK' : 'WARN');
+    notify('Connected to relay server', 'success');
+    if (msg.host_online) refreshDashboard();
+    return;
+  }
+
+  if (msg.event === 'host_online') {
+    state.hostOnline = true;
+    setConnStatus('online');
+    addLog('Host connected', 'OK');
+    notify('Host is now online', 'success');
+    refreshDashboard();
+    return;
+  }
+
+  if (msg.event === 'host_offline') {
+    state.hostOnline = false;
+    setConnStatus('online');
+    addLog('Host disconnected', 'WARN');
+    notify('Host went offline', 'warn');
+    return;
+  }
+
+  // Response to a command
+  if (msg.id && state.pendingReqs[msg.id]) {
+    const { resolve, reject } = state.pendingReqs[msg.id];
+    delete state.pendingReqs[msg.id];
+    if (msg.ok) resolve(msg.data);
+    else reject(new Error(msg.error || 'Unknown error'));
+    return;
+  }
+
+  // WebRTC signaling (from host): answer and ICE candidates
+  if (msg.webrtc_answer && state.streamPc) {
+    (async () => {
+      try {
+        const desc = typeof msg.webrtc_answer === 'string' ? JSON.parse(msg.webrtc_answer) : msg.webrtc_answer;
+        await state.streamPc.setRemoteDescription(new RTCSessionDescription(desc));
+        state.webrtcIceQueue.forEach(c => state.streamPc.addIceCandidate(c).catch(() => {}));
+        state.webrtcIceQueue = [];
+      } catch (e) { addLog('WebRTC setRemoteDescription: ' + ((e && e.message) || String(e)), 'WARN'); }
+    })();
+  }
+  if (msg.webrtc_ice && state.streamPc) {
+    try {
+      const c = typeof msg.webrtc_ice === 'string' ? JSON.parse(msg.webrtc_ice) : msg.webrtc_ice;
+      const candidate = new RTCIceCandidate(c);
+      if (state.streamPc.remoteDescription) state.streamPc.addIceCandidate(candidate).catch(() => {});
+      else state.webrtcIceQueue.push(candidate);
+    } catch (e) {}
+  }
+
+  // Unsolicited events
+  if (msg.event === 'client_joined') addLog('Client joined: ' + msg.data?.user_id, 'INFO');
+  if (msg.event === 'client_left')   addLog('Client left: ' + msg.data?.user_id, 'INFO');
+}
+
+function handleBinary(buf) {
+  const arr = new Uint8Array(buf);
+  if (arr.length < 4) return;
+
+  const sig = String.fromCharCode(arr[0], arr[1], arr[2], arr[3]);
+
+  if (sig === 'SCRN') {
+    if (!state.streaming) return;
+    if (arr.length < 12) return;
+    const w = new DataView(buf).getUint32(4, true);
+    const h = new DataView(buf).getUint32(8, true);
+    const jpeg = new Uint8Array(buf, 12);
+    renderFrame(jpeg, w, h, buf.byteLength);
+    return;
+  }
+
+  if (sig === 'FILE') {
+    // File chunk response — resolve oldest pending download promise (FIFO queue for pipeline)
+    const dv = new DataView(buf);
+    const plen = dv.getUint16(4, true);
+    const dataStart = 4 + 2 + plen + 8;
+    const chunkData = dataStart < buf.byteLength ? buf.slice(dataStart) : new ArrayBuffer(0);
+    if (state.pendingFileChunkQueue.length > 0) {
+      const pending = state.pendingFileChunkQueue.shift();
+      if (pending.timeoutId) clearTimeout(pending.timeoutId);
+      pending.resolve(chunkData);
+    } else {
+      handleFileChunk(buf);
+    }
+    return;
+  }
+}
+
+function sendRaw(data) {
+  if (state.ws && state.ws.readyState === 1) {
+    state.ws.send(data);
+    return true;
+  }
+  return false;
+}
+
+function sendCmd(obj) {
+  return new Promise((resolve, reject) => {
+    if (!state.connected) { reject(new Error('Not connected')); return; }
+    const id = 'r' + (++state.reqIdCounter);
+    obj.id = id;
+    state.pendingReqs[id] = { resolve, reject };
+    setTimeout(() => {
+      if (state.pendingReqs[id]) {
+        delete state.pendingReqs[id];
+        reject(new Error('Timeout'));
+      }
+    }, 30000);
+    sendRaw(JSON.stringify(obj));
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CONNECTION UI
+// ═══════════════════════════════════════════════════════════════
+function setConnStatus(s) {
+  const dot = document.getElementById('conn-dot');
+  const lbl = document.getElementById('conn-label');
+  const hostEl = document.getElementById('host-status');
+  dot.className = '';
+  if (s === 'online') {
+    dot.classList.add('online');
+    lbl.textContent = 'CONNECTED';
+    hostEl.textContent = state.hostOnline ? 'Host: ONLINE' : 'Host: OFFLINE';
+    hostEl.className = 'host-status ' + (state.hostOnline ? 'online' : 'offline');
+    hostEl.style.display = '';
+  } else if (s === 'connecting') {
+    dot.classList.add('connecting');
+    lbl.textContent = 'CONNECTING...';
+    hostEl.style.display = 'none';
+  } else {
+    lbl.textContent = 'DISCONNECTED';
+    hostEl.style.display = 'none';
+  }
+}
+
+var elConnect = document.getElementById('btn-connect');
+if (elConnect) elConnect.onclick = () => {
+  document.getElementById('modal-overlay').classList.remove('hidden');
+};
+var elModalConnect = document.getElementById('btn-modal-connect');
+if (elModalConnect) elModalConnect.addEventListener('click', connectToServer);
+document.getElementById('btn-disconnect').onclick = () => {
+  state.wantDisconnect = true;
+  if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
+  if (state.streamWs) { try { state.streamWs.close(); } catch(e){} state.streamWs = null; }
+  if (state.streaming && state.ws && state.ws.readyState === WebSocket.OPEN) {
+    state.streaming = false;
+    document.getElementById('btn-stream-toggle').textContent = '▶ STREAM';
+    document.getElementById('btn-stream-toggle').classList.remove('active');
+    const doClose = () => { if (state.ws) state.ws.close(); };
+    Promise.race([
+      sendCmd({ cmd: 'stream_stop' }).catch(() => {}),
+      new Promise(r => setTimeout(r, 2000))
+    ]).then(doClose).catch(doClose);
+  } else if (state.ws) {
+    state.ws.close();
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════
+//  SCREEN STREAMING
+// ═══════════════════════════════════════════════════════════════
+const canvas = document.getElementById('screen-canvas');
+const ctx2d  = canvas.getContext('2d');
+let fitMode = true;
+
+// Reusable image for frame rendering - avoids creating new Image() every frame
+const _frameImg = new Image();
+let _framePendingUrl = null;
+let _lastCanvasW = 0, _lastCanvasH = 0;
+
+function renderFrame(jpegArr, w, h, totalBytes) {
+  state.frameCount++;
+  state.streamBytesThisSecond += totalBytes;
+
+  // Revoke previous URL if still pending (drop frame if image decode is slow)
+  if (_framePendingUrl) {
+    URL.revokeObjectURL(_framePendingUrl);
+    _framePendingUrl = null;
+  }
+
+  const blob = new Blob([jpegArr], { type: 'image/jpeg' });
+  const url  = URL.createObjectURL(blob);
+  _framePendingUrl = url;
+  _frameImg.onload = () => {
+    _framePendingUrl = null;
+    // Only resize canvas when dimensions actually change
+    if (_lastCanvasW !== w || _lastCanvasH !== h) {
+      canvas.width  = w;
+      canvas.height = h;
+      _lastCanvasW = w;
+      _lastCanvasH = h;
+    }
+    ctx2d.drawImage(_frameImg, 0, 0);
+    URL.revokeObjectURL(url);
+    document.getElementById('no-stream').style.display = 'none';
+    document.getElementById('stream-stats').classList.remove('hidden');
+    document.getElementById('st-res').textContent = `${w}×${h}`;
+    if (state.recording) {
+      if (!state.recordingRecorder) {
+        const c = document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+        const rctx = c.getContext('2d');
+        const fps = Math.max(1, state.fps || 15);
+        const stream = c.captureStream(fps);
+        let mime = 'video/webm';
+        if (!MediaRecorder.isTypeSupported(mime)) mime = 'video/webm;codecs=vp8';
+        if (!MediaRecorder.isTypeSupported(mime)) mime = 'video/mp4';
+        const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 2500000 });
+        rec.ondataavailable = e => { if (e.data && e.data.size) state.recordingChunks.push(e.data); };
+        rec.onstop = async () => {
+          const mimeType = (rec && rec.mimeType) || 'video/webm';
+          const blob = new Blob(state.recordingChunks, { type: mimeType });
+          const ext = (mimeType || '').indexOf('webm') >= 0 ? 'webm' : 'mp4';
+          const now = new Date();
+          const fn = 'RemoteDesktop_' + now.getFullYear() + String(now.getMonth()+1).padStart(2,'0') + String(now.getDate()).padStart(2,'0') + '_' + String(now.getHours()).padStart(2,'0') + String(now.getMinutes()).padStart(2,'0') + String(now.getSeconds()).padStart(2,'0') + '.' + ext;
+          const lastEl = document.getElementById('rec-last-path');
+          const hintEl = document.getElementById('rec-where-hint');
+          const setSaved = (name, locText) => {
+            state.recordingLastPath = name;
+            if (lastEl) { lastEl.textContent = '📁 ' + name; lastEl.title = locText; }
+            if (hintEl) { hintEl.style.display = 'block'; hintEl.textContent = 'Location: ' + locText; }
+          };
+          try {
+            if (state.recordingDirHandle && typeof state.recordingDirHandle.getFileHandle === 'function') {
+              const handle = await state.recordingDirHandle.getFileHandle(fn, { create: true });
+              const w = await handle.createWritable();
+              await w.write(blob);
+              await w.close();
+              setSaved(fn, 'folder "' + state.recordingDirHandle.name + '" (from Settings).');
+              notify('Saved: ' + fn + ' — in folder "' + state.recordingDirHandle.name + '"', 'success');
+            } else if (typeof window.showSaveFilePicker === 'function') {
+              const handle = await window.showSaveFilePicker({ suggestedName: fn, types: [{ description: 'Video', accept: { 'video/webm': ['.webm'], 'video/mp4': ['.mp4'] } }] });
+              const w = await handle.createWritable();
+              await w.write(blob);
+              await w.close();
+              setSaved(handle.name, 'the folder you selected in the "Save as" dialog.');
+              notify('Saved: ' + handle.name + ' — in the folder you chose', 'success');
+            } else {
+              const a = document.createElement('a');
+              a.href = URL.createObjectURL(blob);
+              a.download = fn;
+              a.click();
+              setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+              setSaved(fn, 'usually your Downloads folder (browser menu → Downloads).');
+              notify('Saved as ' + fn + ' — check Downloads folder or browser menu → Downloads', 'info');
+            }
+          } catch (e) {
+            if (e && e.name === 'AbortError') {
+              if (lastEl) lastEl.textContent = 'Save cancelled';
+              if (hintEl) hintEl.style.display = 'none';
+            } else {
+              const a = document.createElement('a');
+              a.href = URL.createObjectURL(blob);
+              a.download = fn;
+              a.click();
+              setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+              setSaved(fn, 'usually your Downloads folder (browser menu → Downloads).');
+              notify('Saved as ' + fn + ' — check Downloads folder', 'success');
+            }
+          }
+          state.recordingChunks = [];
+        };
+        state.recordingCanvas = c;
+        state.recordingCtx = rctx;
+        state.recordingRecorder = rec;
+        state.recordingChunks = [];
+        rec.start(1000);
+      }
+      if (state.recordingCtx) {
+        // Update canvas size if resolution changed
+        if (state.recordingCanvas && (state.recordingCanvas.width !== w || state.recordingCanvas.height !== h)) {
+          state.recordingCanvas.width = w;
+          state.recordingCanvas.height = h;
+        }
+        state.recordingCtx.drawImage(_frameImg, 0, 0, w, h);
+      }
+    }
+  };
+  _frameImg.src = url;
+}
+
+// FPS counter
+setInterval(() => {
+  const now = Date.now();
+  const elapsed = (now - state.lastFpsTime) / 1000;
+  if (elapsed >= 1) {
+    state.currentFps = Math.round(state.frameCount / elapsed);
+    const bw = state.streamBytesThisSecond / elapsed;
+    state.streamBwDisplay = bw > 1048576 ? (bw/1048576).toFixed(1)+' MB/s' : Math.round(bw/1024)+' KB/s';
+    state.frameCount = 0;
+    state.streamBytesThisSecond = 0;
+    state.lastFpsTime = now;
+    document.getElementById('fps-counter').textContent = state.currentFps + ' FPS';
+    document.getElementById('st-fps').textContent = state.currentFps;
+    document.getElementById('st-bw').textContent  = state.streamBwDisplay;
+    document.getElementById('d-fps').textContent  = state.currentFps;
+  }
+}, 500);
+
+let _streamStarting = false;
+document.getElementById('btn-stream-toggle').onclick = async () => {
+  if (!state.connected || !state.hostOnline) { notify('Host not online', 'warn'); return; }
+  if (state.streaming) { stopStream(); return; }
+  if (_streamStarting) return;
+  _streamStarting = true;
+  try { await startStream(); } finally { _streamStarting = false; }
+};
+
+function parseScrnAndRender(buf) {
+  const arr = new Uint8Array(buf);
+  if (arr.length < 12) return;
+  const sig = String.fromCharCode(arr[0], arr[1], arr[2], arr[3]);
+  if (sig !== 'SCRN') return;
+  const w = new DataView(buf).getUint32(4, true);
+  const h = new DataView(buf).getUint32(8, true);
+  const jpeg = new Uint8Array(buf, 12);
+  renderFrame(jpeg, w, h, buf.byteLength);
+}
+
+async function startStream() {
+  // Clean up any stale WebRTC state from previous session
+  if (state.streamDc) { try { state.streamDc.close(); } catch(e){} state.streamDc = null; }
+  if (state.streamPc) { try { state.streamPc.close(); } catch(e){} state.streamPc = null; }
+  if (state.streamWs) { try { state.streamWs.close(); } catch(e){} state.streamWs = null; }
+  state.streamOverWebRTC = false;
+  state.webrtcIceQueue = [];
+
+  // Open a dedicated WebSocket just for receiving SCRN binary frames.
+  // This keeps the main command WS free from megabytes of frame data,
+  // which was causing sendCmd() timeouts making Files/Processes/etc stop working.
+  const mainWs = state.ws;
+  const server  = document.getElementById('in-server').value.trim();
+  const portEl  = document.getElementById('in-port').value.trim();
+  const defPort = (window.location.port && window.location.port !== '') ? window.location.port : (window.location.protocol === 'https:' ? '443' : '80');
+  const port    = portEl || defPort;
+  const ssl     = document.getElementById('in-ssl') ? document.getElementById('in-ssl').checked : false;
+  const proto   = ssl ? 'wss' : 'ws';
+  const token   = document.getElementById('in-token').value.trim();
+  const pass    = document.getElementById('in-pass') ? document.getElementById('in-pass').value : '';
+  // Derive stream WS URL from current page URL — guarantees same host/port/protocol
+  // that nginx is already handling (avoids HTTP/1.0 issue with direct port 8080)
+  const streamProto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  const streamHost  = window.location.host; // includes port if non-default
+  const streamUrl   = `${streamProto}://${streamHost}/client`;
+  const sws = new WebSocket(streamUrl);
+  sws.binaryType = 'arraybuffer';
+  state.streamWs = sws;
+  sws.onopen = () => {
+    sws.send(JSON.stringify({ cmd: 'auth', token, password: pass, role: 'stream' }));
+  };
+  sws.onmessage = (ev) => {
+    if (!(ev.data instanceof ArrayBuffer)) return; // ignore text on stream WS
+    const arr = new Uint8Array(ev.data);
+    if (arr.length < 4) return;
+    const sig = String.fromCharCode(arr[0],arr[1],arr[2],arr[3]);
+    if (sig === 'SCRN' && !state.streamOverWebRTC && state.streaming) {
+      parseScrnAndRender(ev.data);
+    }
+  };
+  sws.onclose = () => {
+    if (state.streamWs === sws) {
+      state.streamWs = null;
+      // Auto-reconnect stream WS if still streaming
+      if (state.streaming && state.connected && !state.streamOverWebRTC) {
+        addLog('Stream WS lost, reconnecting...', 'WARN');
+        setTimeout(() => {
+          if (!state.streaming || !state.connected || state.streamOverWebRTC) return;
+          try {
+            const rsws = new WebSocket(streamUrl);
+            rsws.binaryType = 'arraybuffer';
+            state.streamWs = rsws;
+            rsws.onopen = () => {
+              rsws.send(JSON.stringify({ cmd: 'auth', token, password: pass, role: 'stream' }));
+              addLog('Stream WS reconnected', 'OK');
+            };
+            rsws.onmessage = sws.onmessage;
+            rsws.onclose = sws.onclose;
+            rsws.onerror = () => {};
+          } catch(e) {}
+        }, 2000);
+      }
+    }
+  };
+  sws.onerror = () => { /* silent — main ws handles reconnect */ };
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    iceCandidatePoolSize: 0
+  });
+  const dc = pc.createDataChannel('stream', { ordered: false, maxRetransmits: 0 });
+  dc.binaryType = 'arraybuffer';
+  dc.onmessage = (e) => {
+    if (e.data && state.streamOverWebRTC) parseScrnAndRender(e.data);
+  };
+  dc.onopen = () => {
+    state.streamOverWebRTC = true;
+    addLog('Stream: WebRTC (UDP) active', 'OK');
+  };
+  dc.onclose = () => { state.streamOverWebRTC = false; };
+  pc.onicecandidate = (ev) => {
+    if (ev.candidate && state.ws && state.ws.readyState === WebSocket.OPEN)
+      sendRaw(JSON.stringify({ webrtc_ice: ev.candidate }));
+  };
+  state.streamPc = pc;
+  state.streamDc = dc;
+
+  let offer;
+  try {
+    offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+  } catch (e) {
+    addLog('WebRTC createOffer: ' + e.message, 'WARN');
+  }
+
+  try {
+    await sendCmd({
+      cmd: 'stream_start',
+      codec: state.codec,
+      quality: state.quality,
+      fps: state.fps,
+      scale: state.scale,
+      webrtc_offer: offer ? { type: pc.localDescription.type, sdp: pc.localDescription.sdp } : null
+    });
+  } catch (e) {
+    pc.close();
+    state.streamPc = null;
+    state.streamDc = null;
+    notify('Stream error: ' + e.message, 'error');
+    return;
+  }
+
+  state.streaming = true;
+  document.getElementById('btn-stream-toggle').textContent = '⏹ STOP';
+  document.getElementById('btn-stream-toggle').classList.add('active');
+  addLog('Stream started (WebSocket: files/commands; WebRTC used for video when supported)', 'OK');
+  switchPanel('screen');
+
+  setTimeout(() => {
+    if (!state.streamOverWebRTC && state.streaming)
+      addLog('Stream: using WebSocket (TCP) for video', 'INFO');
+  }, 4000);
+}
+
+async function stopStream() {
+  state.streaming = false;
+  state.streamOverWebRTC = false;
+  if (state.streamDc) { state.streamDc.close(); state.streamDc = null; }
+  if (state.streamPc) { state.streamPc.close(); state.streamPc = null; }
+  if (state.streamWs) { try { state.streamWs.close(); } catch(e){} state.streamWs = null; }
+  state.webrtcIceQueue = [];
+  document.getElementById('btn-stream-toggle').textContent = '▶ STREAM';
+  document.getElementById('btn-stream-toggle').classList.remove('active');
+  document.getElementById('no-stream').style.display = 'flex';
+  document.getElementById('stream-stats').classList.add('hidden');
+  try { await sendCmd({ cmd:'stream_stop' }); } catch(e) {}
+}
+
+function sendStreamSettings() {
+  if (state.streaming) sendCmd({ cmd:'stream_settings', quality: state.quality, fps: state.fps, scale: state.scale });
+}
+
+function adjustQuality(delta) {
+  state.quality = Math.max(10, Math.min(100, state.quality + delta));
+  document.getElementById('quality-disp').textContent = state.quality + '%';
+  sendStreamSettings();
+  notify(`Quality: ${state.quality}%`, 'info', 1500);
+}
+function adjustFps(delta) {
+  state.fps = Math.max(5, Math.min(60, state.fps + delta));
+  document.getElementById('fps-disp').textContent = state.fps;
+  sendStreamSettings();
+  notify(`FPS: ${state.fps}`, 'info', 1500);
+}
+function adjustScale(delta) {
+  state.scale = Math.max(10, Math.min(100, state.scale + delta));
+  document.getElementById('scale-disp').textContent = state.scale + '%';
+  sendStreamSettings();
+  notify(`Scale: ${state.scale}%`, 'info', 1500);
+}
+function toggleCompressed(on) {
+  state.compressed = on;
+  if (on) {
+    state.quality = 40;
+    state.scale = 50;
+  } else {
+    state.quality = 50;
+    state.scale = 60;
+  }
+  document.getElementById('quality-disp').textContent = state.quality + '%';
+  document.getElementById('scale-disp').textContent = state.scale + '%';
+  document.getElementById('stream-compressed').checked = on;
+  sendStreamSettings();
+  notify(on ? 'Compressed (40%, 50% scale)' : 'Normal', 'info', 1500);
+}
+function toggleFit() { fitMode = !fitMode; canvas.style.objectFit = fitMode ? 'contain' : 'fill'; }
+function takeScreenshot() {
+  const a = document.createElement('a');
+  a.href = canvas.toDataURL('image/png');
+  a.download = 'screenshot_' + Date.now() + '.png';
+  a.click();
+}
+function requestFullscreen() { document.getElementById('panel-screen').requestFullscreen?.(); }
+
+// Recording
+document.getElementById('btn-record').onclick = toggleRecording;
+function formatDuration(sec) {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return (m > 0 ? m + ':' : '') + (s < 10 ? '0' : '') + s;
+}
+function updateRecordingDuration() {
+  if (!state.recording || !state.recordingStartTime) return;
+  const el = document.getElementById('rec-duration');
+  if (el) el.textContent = formatDuration(Math.floor((Date.now() - state.recordingStartTime) / 1000));
+}
+async function toggleRecording() {
+  if (!state.connected || !state.hostOnline) { notify('Connect and start stream first', 'warn'); return; }
+  if (!state.streaming) { notify('Start the stream first', 'warn'); return; }
+  if (!state.recording) {
+    state.recordingStartMs = Date.now();
+    state.recording = true;
+    state.recordingStartTime = Date.now();
+    state.recordingCanvas = null;
+    const lastEl = document.getElementById('rec-last-path');
+    const hintEl = document.getElementById('rec-where-hint');
+    if (lastEl) lastEl.textContent = '';
+    if (hintEl) { hintEl.textContent = ''; hintEl.style.display = 'none'; }
+    state.recordingCtx = null;
+    state.recordingRecorder = null;
+    state.recordingChunks = [];
+    document.getElementById('btn-record').classList.add('active');
+    document.getElementById('btn-rec-overlay').classList.add('rec-active');
+    if (state.recordingDurationTimer) clearInterval(state.recordingDurationTimer);
+    state.recordingDurationTimer = setInterval(updateRecordingDuration, 1000);
+    updateRecordingDuration();
+    notify('Recording (WebM/MP4, saved when you stop)', 'success');
+    addLog('Recording started — format: WebM (standard)', 'OK');
+  } else {
+    state.recording = false;
+    if (state.recordingDurationTimer) { clearInterval(state.recordingDurationTimer); state.recordingDurationTimer = null; }
+    document.getElementById('btn-record').classList.remove('active');
+    document.getElementById('btn-rec-overlay').classList.remove('rec-active');
+    document.getElementById('rec-duration').textContent = '';
+    const btn = document.getElementById('btn-record');
+    btn.innerHTML = '⏺ Saving...';
+    btn.disabled = true;
+    try {
+      if (state.recordingRecorder && state.recordingRecorder.state !== 'inactive') {
+        state.recordingRecorder.stop();
+        notify('Saving video (WebM)...', 'info');
+      } else {
+        notify('No video recorded', 'warn');
+      }
+      state.recordingCanvas = null;
+      state.recordingCtx = null;
+      state.recordingRecorder = null;
+    } catch (e) { notify('Save error: ' + (e?.message || e), 'error'); }
+    finally {
+      btn.disabled = false;
+      btn.innerHTML = '⏺ REC <span id="rec-duration"></span>';
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  FILE MANAGER
+// ═══════════════════════════════════════════════════════════════
+async function refreshFiles() {
+  if (!state.hostOnline) return;
+  const path = state.currentPath;
+  try {
+    document.getElementById('fm-status').textContent = 'Loading...';
+    const data = await sendCmd({ cmd:'file_list', path });
+    let items = typeof data === 'string' ? JSON.parse(data) : data;
+    if (!Array.isArray(items)) items = items.items || [];
+    state.fileList = items;
+    renderFileList(items);
+    renderBreadcrumb(path);
+    document.getElementById('fm-path-input').value = path;
+    document.getElementById('fm-status').textContent = `${items.length} items in ${path}`;
+  } catch(e) { notify('File list error: '+e.message, 'error'); }
+}
+
+function renderFileList(items) {
+  const sorted = [...items].sort((a,b) => {
+    // Dirs first
+    if (a.type === 'dir' && b.type !== 'dir') return -1;
+    if (a.type !== 'dir' && b.type === 'dir') return 1;
+    let va = a[state.fileSortKey] || '', vb = b[state.fileSortKey] || '';
+    if (state.fileSortKey === 'size') { va = Number(va); vb = Number(vb); }
+    const cmp = va < vb ? -1 : va > vb ? 1 : 0;
+    return state.fileSortAsc ? cmp : -cmp;
+  });
+
+  const tbody = document.getElementById('fm-body');
+  tbody.innerHTML = '';
+  
+  // ".." row — show for all paths except drive root (e.g. C:\)
+  if (!/^[A-Za-z]:\\?$/.test(state.currentPath)) {
+    const tr = document.createElement('tr');
+    tr.className = 'fm-row fm-dir';
+    tr.innerHTML = `<td></td><td colspan="4" class="fm-icon" style="color:var(--muted)">📁 ..</td>`;
+    tr.ondblclick = goUpDir;
+    tbody.appendChild(tr);
+  }
+
+  sorted.forEach(item => {
+    const isDir = item.type === 'dir';
+    const icon  = isDir ? '📁' : getFileIcon(item.name);
+    const size  = isDir ? '—' : formatBytes(item.size);
+    const date  = item.modified || '—';
+    const tr = document.createElement('tr');
+    tr.className = 'fm-row' + (isDir ? ' fm-dir' : '');
+    tr.dataset.name = item.name;
+    tr.innerHTML = `
+      <td><input type="checkbox" class="fm-cb" onchange="onFileCheck(event)" /></td>
+      <td><span class="fm-icon">${icon}</span> <span class="fm-name ellipsis" style="max-width:320px;display:inline-block;vertical-align:middle">${escHtml(item.name)}</span></td>
+      <td class="fm-size">${size}</td>
+      <td class="fm-date">${escHtml(date)}</td>
+      <td class="fm-attr" style="font-size:10px;color:var(--muted)">${item.attrs||''}</td>`;
+    
+    tr.onclick = () => {
+      document.querySelectorAll('.fm-row').forEach(r => r.classList.remove('selected'));
+      tr.classList.add('selected');
+    };
+    tr.ondblclick = () => {
+      if (isDir) navigateTo(state.currentPath.replace(/\\$/, '') + '\\' + item.name);
+      else downloadFile(item.name);
+    };
+    tr.oncontextmenu = (e) => showFileContextMenu(e, item);
+    tbody.appendChild(tr);
+  });
+}
+
+function renderBreadcrumb(path) {
+  const bc = document.getElementById('fm-breadcrumb');
+  bc.innerHTML = '';
+  const parts = path.replace(/\\/g,'/').split('/').filter(Boolean);
+  parts.forEach((part, i) => {
+    const span = document.createElement('span');
+    const fullPath = parts.slice(0,i+1).join('\\') + (i===0?'\\':'');
+    span.className = 'fm-crumb' + (i===parts.length-1?' last':'');
+    span.textContent = part;
+    if (i < parts.length-1) span.onclick = () => navigateTo(fullPath);
+    bc.appendChild(span);
+    if (i < parts.length-1) {
+      const sep = document.createElement('span');
+      sep.className = 'fm-crumb-sep';
+      sep.textContent = '›';
+      bc.appendChild(sep);
+    }
+  });
+}
+
+function normalizePath(p) {
+  p = (p || '').replace(/\//g, '\\').trim();
+  // Remove trailing backslash unless it's a drive root
+  p = p.replace(/\\+$/, '');
+  // Drive root: ensure it ends with single backslash
+  if (/^[A-Za-z]:?$/.test(p)) return p.charAt(0).toUpperCase() + ':\\';
+  if (/^[A-Za-z]:\\$/.test(p)) return p;
+  return p || 'C:\\';
+}
+
+function navigateTo(path) {
+  state.currentPath = normalizePath(path);
+  document.getElementById('fm-path-input').value = state.currentPath;
+  state.selectedFiles.clear();
+  refreshFiles();
+  loadDrives(); // Refresh drives when navigating
+}
+function goUpDir() {
+  let p = state.currentPath.replace(/\\+$/, '');
+  const last = p.lastIndexOf('\\');
+  if (last <= 2) { navigateTo(p.slice(0,3)); return; }
+  navigateTo(p.slice(0, last));
+}
+function sortFiles(key) {
+  if (state.fileSortKey === key) state.fileSortAsc = !state.fileSortAsc;
+  else { state.fileSortKey = key; state.fileSortAsc = true; }
+  renderFileList(state.fileList);
+}
+function toggleSelectAll(checked) {
+  document.querySelectorAll('.fm-cb').forEach(cb => {
+    cb.checked = checked;
+    const name = cb.closest('tr').dataset.name;
+    if (name) { if(checked) state.selectedFiles.add(name); else state.selectedFiles.delete(name); }
+  });
+}
+function onFileCheck(e) {
+  const row = e.target.closest('tr');
+  const name = row && row.dataset && row.dataset.name;
+  if (!name) return;
+  if (e.target.checked) state.selectedFiles.add(name);
+  else state.selectedFiles.delete(name);
+}
+
+async function deleteSelected() {
+  const selectedNames = getSelectedFileNames();
+  if (!selectedNames.length) { notify('No files selected', 'warn'); return; }
+  if (!confirm(`Delete ${selectedNames.length} item(s)?`)) return;
+  let ok = 0, fail = 0;
+  const base = normPath(state.currentPath) + '\\';
+  for (const name of selectedNames) {
+    try {
+      await sendCmd({ cmd:'file_delete', path: base + name });
+      ok++;
+    } catch { fail++; }
+  }
+  selectedNames.forEach(function(n) { state.selectedFiles.delete(n); });
+  document.querySelectorAll('.fm-cb').forEach(cb => { cb.checked = false; });
+  notify(`Deleted ${ok}. Failed: ${fail}`, fail ? 'warn' : 'success');
+  refreshFiles();
+}
+
+async function newFolder() {
+  const name = prompt('Folder name:');
+  if (!name) return;
+  try {
+    await sendCmd({ cmd:'file_mkdir', path: state.currentPath+'\\'+name });
+    notify('Folder created', 'success');
+    refreshFiles();
+  } catch(e) { notify('Error: '+e.message, 'error'); }
+}
+
+// File download
+function downloadFile(name) {
+  const path = state.currentPath.replace(/\\+$/, '') + '\\' + name;
+  notify(`Downloading: ${name}...`, 'info');
+  downloadFromHost(path, name);
+}
+
+function normPath(p) {
+  return (p || '').replace(/\//g, '\\').replace(/\\+/g, '\\').replace(/\\$/, '') || '';
+}
+
+// Collect all files to download from a path (recursive for folders)
+async function collectFilesToDownload(dirPath, prefix) {
+  const base = normPath(dirPath);
+  const baseWithSlash = base.endsWith('\\') ? base : base + '\\';
+  let raw;
+  try {
+    raw = await sendCmd({ cmd:'file_list', path: baseWithSlash });
+  } catch (e) { return []; }
+  if (raw == null) return [];
+  const data = typeof raw === 'string' ? (function(){ try { return JSON.parse(raw); } catch(_){ return {}; } })() : raw;
+  const items = data.items || (Array.isArray(data) ? data : []) || [];
+  const out = [];
+  for (const item of items) {
+    const name = item.name || item.fileName || '';
+    if (!name || name === '.' || name === '..') continue;
+    const fullPath = baseWithSlash + name;
+    // Use path separator '/' for proper folder structure in downloads
+    const saveName = prefix ? prefix + '/' + name : name;
+    if ((item.type || item.fileAttribute || '').toLowerCase() === 'dir' || item.isDir) {
+      const sub = await collectFilesToDownload(fullPath, saveName);
+      out.push(...sub);
+    } else {
+      out.push({ path: fullPath, saveName: saveName, size: item.size || 0 });
+    }
+  }
+  return out;
+}
+
+function getSelectedFileNames() {
+  const names = [];
+  document.querySelectorAll('.fm-cb:checked').forEach(function(cb) {
+    const tr = cb.closest('tr');
+    if (!tr) return;
+    let name = tr.dataset && tr.dataset.name;
+    if (!name) {
+      const nameEl = tr.querySelector('.fm-name');
+      if (nameEl) name = (nameEl.textContent || '').trim();
+    }
+    if (name) names.push(name);
+  });
+  return names;
+}
+async function downloadSelected() {
+  const selectedNames = getSelectedFileNames();
+  if (!selectedNames.length) {
+    notify('Select files or folders', 'warn');
+    return;
+  }
+  const base = normPath(state.currentPath) + '\\';
+  const toDownload = [];
+  for (const name of selectedNames) {
+    const item = state.fileList.find(i => (i.name || '') === name);
+    const path = base + name;
+    if (!item || (item.type || '').toLowerCase() !== 'dir') {
+      toDownload.push({ path, saveName: name });
+    } else {
+      // Folder download: collect all files recursively with proper path structure
+      const files = await collectFilesToDownload(path, name);
+      toDownload.push(...files);
+    }
+  }
+  if (!toDownload.length) { notify('Nothing to download', 'warn'); return; }
+  notify(`Downloading ${toDownload.length} file(s)...`, 'info');
+  let ok = 0, fail = 0;
+  for (let i = 0; i < toDownload.length; i++) {
+    const { path, saveName } = toDownload[i];
+    try {
+      // For folder downloads, flatten the saveName by replacing / with _
+      // (browser downloads can't create subdirectories)
+      const flatName = saveName.replace(/[\/\\]/g, '_');
+      document.getElementById('fm-status').textContent = `Downloading ${i+1}/${toDownload.length}: ${flatName}`;
+      await downloadFromHost(path, flatName, true);
+      ok++;
+    } catch (e) { fail++; notify('Failed: ' + saveName, 'error'); }
+    if (i < toDownload.length - 1) await new Promise(r => setTimeout(r, 100));
+  }
+  selectedNames.forEach(function(n) { state.selectedFiles.delete(n); });
+  document.querySelectorAll('.fm-cb').forEach(cb => { cb.checked = false; });
+  const statusMsg = `Downloaded ${ok}/${toDownload.length} file(s)` + (fail ? `, ${fail} failed` : '');
+  notify(statusMsg, fail ? 'warn' : 'success');
+  document.getElementById('fm-status').textContent = statusMsg;
+}
+
+// Collect all file paths to copy (recursive for folders). fromBase = source dir with \; destBase = destination dir with \
+async function collectFilesToCopy(dirPath, destBase, fromBase, list) {
+  const baseWithSlash = normPath(dirPath) + (dirPath.endsWith('\\') ? '' : '\\');
+  let raw;
+  try { raw = await sendCmd({ cmd: 'file_list', path: baseWithSlash }); } catch (e) { return; }
+  const data = typeof raw === 'string' ? (function(){ try { return JSON.parse(raw); } catch(_){ return {}; } })() : raw;
+  const items = data.items || (Array.isArray(data) ? data : []) || [];
+  for (const item of items) {
+    const name = item.name || item.fileName || '';
+    if (!name || name === '.' || name === '..') continue;
+    const from = baseWithSlash + name;
+    const rel = from.substring(fromBase.length);
+    const to = destBase + rel;
+    if ((item.type || item.fileAttribute || '').toLowerCase() === 'dir' || item.isDir) {
+      try { await sendCmd({ cmd: 'file_mkdir', path: to + '\\' }); } catch (_) {}
+      await collectFilesToCopy(from + '\\', destBase, fromBase, list);
+    } else {
+      list.push({ from, to });
+    }
+  }
+}
+
+async function copySelected() {
+  const selectedNames = getSelectedFileNames();
+  if (!selectedNames.length) { notify('Select files or folders', 'warn'); return; }
+  const dest = prompt('Destination path on host (e.g. D:\\Backup\\):', state.currentPath);
+  if (!dest) return;
+  const destBase = normPath(dest) + (dest.endsWith('\\') ? '' : '\\');
+  const base = normPath(state.currentPath) + '\\';
+  const toCopy = [];
+  for (const name of selectedNames) {
+    const item = state.fileList.find(i => (i.name || '').trim() === (name || '').trim());
+    const from = base + name;
+    const to = destBase + name;
+    if (item && ((item.type || '').toLowerCase() === 'dir' || item.isDir)) {
+      try { await sendCmd({ cmd: 'file_mkdir', path: to + '\\' }); } catch (_) {}
+      await collectFilesToCopy(from + '\\', destBase + name + '\\', from + '\\', toCopy);
+    } else {
+      toCopy.push({ from, to });
+    }
+  }
+  if (!toCopy.length) { notify('Nothing to copy', 'warn'); return; }
+  notify(`Copying ${toCopy.length} item(s)...`, 'info');
+  let ok = 0, fail = 0;
+  for (const { from, to } of toCopy) {
+    try {
+      await sendCmd({ cmd: 'file_copy', from, to });
+      ok++;
+    } catch (e) { fail++; }
+  }
+  selectedNames.forEach(function(n) { state.selectedFiles.delete(n); });
+  document.querySelectorAll('.fm-cb').forEach(cb => { cb.checked = false; });
+  notify(`Copied ${ok}. Failed: ${fail}`, fail ? 'warn' : 'success');
+  refreshFiles();
+}
+
+async function downloadFromHost(path, filename, silent) {
+  const CHUNK = 1048576; // 1MB chunks for high throughput
+  const PIPELINE = 6;    // Number of in-flight requests (pipelining)
+  const CHUNK_TIMEOUT = 30000; // 30s timeout per chunk
+  let bar = document.getElementById('fm-progress');
+  path = normPath(path);
+  if (!path) return;
+
+  let totalSize = 0;
+  try {
+    const info = await sendCmd({ cmd:'file_info', path });
+    if (info != null) {
+      if (typeof info === 'object' && 'size' in info) totalSize = Number(info.size) || 0;
+      else if (typeof info === 'string') { try { const o = JSON.parse(info); totalSize = (o && typeof o.size === 'number') ? o.size : 0; } catch(_) {} }
+    }
+  } catch {}
+
+  const chunks = [];
+  let receivedBytes = 0;
+  let nextSendOffset = 0;      // Next offset to request
+  let done = false;
+  let error = null;
+  const startTime = Date.now();
+  let lastProgressUpdate = 0;
+
+  // Helper: send one chunk request and return a promise for the response
+  function requestChunk(offset) {
+    return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        // Remove from queue on timeout
+        const idx = state.pendingFileChunkQueue.findIndex(p => p._offset === offset);
+        if (idx >= 0) state.pendingFileChunkQueue.splice(idx, 1);
+        reject(new Error('Chunk timeout at offset ' + offset));
+      }, CHUNK_TIMEOUT);
+      const entry = { resolve, reject, timeoutId, _offset: offset };
+      state.pendingFileChunkQueue.push(entry);
+      sendRaw(JSON.stringify({ cmd:'file_read_chunk', path, offset, length: CHUNK }));
+    });
+  }
+
+  // Update progress display
+  function updateProgress() {
+    const now = Date.now();
+    if (now - lastProgressUpdate < 150 && receivedBytes < totalSize) return; // Throttle UI updates
+    lastProgressUpdate = now;
+    if (totalSize > 0) {
+      const pct = Math.min(100, (receivedBytes / totalSize * 100));
+      bar.style.width = pct.toFixed(1) + '%';
+      if (!silent) {
+        const elapsed = (now - startTime) / 1000;
+        const speed = elapsed > 0.1 ? receivedBytes / elapsed : 0;
+        const remaining = speed > 0 ? (totalSize - receivedBytes) / speed : 0;
+        const status = document.getElementById('fm-status');
+        if (status) status.textContent =
+          `${filename}: ${formatBytes(receivedBytes)} / ${formatBytes(totalSize)} (${pct.toFixed(0)}%) \u2014 ${formatSpeed(speed)}, ETA ${formatETA(remaining)}`;
+      }
+    }
+  }
+
+  // Pipeline loop: keep PIPELINE requests in flight at all times
+  const inflight = [];
+
+  // Seed initial pipeline
+  const maxOffset = totalSize > 0 ? totalSize : Number.MAX_SAFE_INTEGER;
+  for (let i = 0; i < PIPELINE && nextSendOffset < maxOffset; i++) {
+    inflight.push({ offset: nextSendOffset, promise: requestChunk(nextSendOffset) });
+    nextSendOffset += CHUNK;
+  }
+
+  while (inflight.length > 0) {
+    const current = inflight.shift();
+    let chunkData = null;
+    try {
+      chunkData = await current.promise;
+    } catch (e) {
+      // Retry once on failure
+      try {
+        chunkData = await requestChunk(current.offset);
+      } catch (e2) {
+        error = e2;
+        break;
+      }
+    }
+
+    if (!chunkData || chunkData.byteLength === 0) {
+      // EOF or error — if we expected more data, retry
+      if (totalSize > 0 && current.offset + receivedBytes < totalSize * 0.95) {
+        // Try one more time
+        try {
+          chunkData = await requestChunk(current.offset);
+        } catch(_) {}
+      }
+      if (!chunkData || chunkData.byteLength === 0) break;
+    }
+
+    chunks.push(new Uint8Array(chunkData));
+    receivedBytes += chunkData.byteLength;
+    updateProgress();
+
+    // If this chunk was smaller than requested, it's the last one
+    if (chunkData.byteLength < CHUNK) {
+      // Drain remaining inflight but don't send more
+      for (const rem of inflight) {
+        try { await rem.promise; } catch(_) {}
+      }
+      inflight.length = 0;
+      break;
+    }
+
+    // Send next request to keep pipeline full
+    if (nextSendOffset < maxOffset) {
+      inflight.push({ offset: nextSendOffset, promise: requestChunk(nextSendOffset) });
+      nextSendOffset += CHUNK;
+    }
+  }
+
+  // Clear any remaining pending items in queue (safety)
+  state.pendingFileChunkQueue.forEach(p => { if (p.timeoutId) clearTimeout(p.timeoutId); });
+  state.pendingFileChunkQueue = [];
+
+  bar.style.width = '0%';
+
+  // Final stats
+  const total = chunks.reduce((a, c) => a + c.length, 0);
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  const avgSpeed = elapsed > 0 ? total / parseFloat(elapsed) : 0;
+
+  if (totalSize > 0 && total < totalSize * 0.95) {
+    notify(`${filename} \u2014 ${formatBytes(totalSize)} expected, ${formatBytes(total)} received`, 'warn');
+  }
+
+  const merged = new Uint8Array(total);
+  let pos = 0;
+  chunks.forEach(c => { merged.set(c, pos); pos += c.length; });
+
+  const blob = new Blob([merged]);
+  const doneMsg = `${filename} (${formatBytes(total)}) \u2014 ${elapsed}s, ${formatSpeed(avgSpeed)}`;
+  const saveViaLink = () => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    if (!silent) notify(doneMsg, 'success');
+  };
+  if (state.downloadDirHandle && typeof state.downloadDirHandle.getFileHandle === 'function') {
+    try {
+      const handle = await state.downloadDirHandle.getFileHandle(filename, { create: true });
+      const w = await handle.createWritable();
+      await w.write(blob);
+      await w.close();
+      if (!silent) notify(`\u2192 "${state.downloadDirHandle.name}": ${doneMsg}`, 'success');
+    } catch (e) {
+      if (!silent) notify('Save to folder failed: ' + (e.message || e), 'warn');
+      saveViaLink();
+    }
+  } else if (typeof window.showSaveFilePicker === 'function' && window.isSecureContext && !silent) {
+    try {
+      const handle = await window.showSaveFilePicker({ suggestedName: filename });
+      const w = await handle.createWritable();
+      await w.write(blob);
+      await w.close();
+      notify(handle.name + ' \u2014 ' + doneMsg, 'success');
+    } catch (e) {
+      if (e.name !== 'AbortError') saveViaLink();
+    }
+  } else {
+    saveViaLink();
+  }
+  // Clear status
+  if (!silent) {
+    const status = document.getElementById('fm-status');
+    if (status) status.textContent = '';
+  }
+}
+
+// Binary file chunk handler (override in state)
+let pendingFileChunks = {};
+function handleFileChunk(buf) {
+  const dv = new DataView(buf);
+  const plen = dv.getUint16(4, true);
+  const pathBytes = new Uint8Array(buf, 6, plen);
+  const path = new TextDecoder().decode(pathBytes);
+  const offset = Number(dv.getBigUint64(6 + plen, true));
+  const data = new Uint8Array(buf, 6 + plen + 8);
+  if (pendingFileChunks[path]) {
+    pendingFileChunks[path].push({ offset, data });
+  }
+}
+
+// Upload
+function uploadFile() {
+  document.getElementById('upload-input').click();
+}
+
+async function handleUpload(input) {
+  const files = Array.from(input.files);
+  if (!files.length) return;
+  const bar = document.getElementById('fm-progress');
+  const status = document.getElementById('fm-status');
+
+  for (const file of files) {
+    notify(`Uploading: ${file.name} (${formatBytes(file.size)})`, 'info');
+    const path = state.currentPath + '\\' + file.name;
+    const CHUNK = 524288; // 512KB chunks (was 64KB)
+    let offset = 0;
+    const reader = new FileReader();
+    const startTime = Date.now();
+    let lastProgressUpdate = 0;
+
+    while (offset < file.size) {
+      const slice = file.slice(offset, offset + CHUNK);
+      const arrBuf = await new Promise(r => { reader.onload = e => r(e.target.result); reader.readAsArrayBuffer(slice); });
+      const arr = new Uint8Array(arrBuf);
+      const last = (offset + arr.length) >= file.size;
+
+      // Build WCHK message
+      const pathBytes = new TextEncoder().encode(path);
+      const msg = new Uint8Array(4 + 1 + 2 + pathBytes.length + 8 + arr.length);
+      const dv = new DataView(msg.buffer);
+      msg[0]=87;msg[1]=67;msg[2]=72;msg[3]=75; // WCHK
+      msg[4] = last ? 1 : 0;
+      dv.setUint16(5, pathBytes.length, true);
+      msg.set(pathBytes, 7);
+      dv.setBigUint64(7 + pathBytes.length, BigInt(offset), true);
+      msg.set(arr, 7 + pathBytes.length + 8);
+      sendRaw(msg.buffer);
+
+      offset += arr.length;
+      const now = Date.now();
+      if (now - lastProgressUpdate > 150 || last) {
+        lastProgressUpdate = now;
+        const pct = Math.min(100, (offset / file.size * 100));
+        bar.style.width = pct.toFixed(1) + '%';
+        const elapsed = (now - startTime) / 1000;
+        const speed = elapsed > 0.1 ? offset / elapsed : 0;
+        const remaining = speed > 0 ? (file.size - offset) / speed : 0;
+        if (status) status.textContent =
+          `\u2191 ${file.name}: ${formatBytes(offset)} / ${formatBytes(file.size)} (${pct.toFixed(0)}%) \u2014 ${formatSpeed(speed)}, ETA ${formatETA(remaining)}`;
+      }
+      // Yield to event loop every 2MB to avoid blocking UI
+      if (offset % (CHUNK * 4) === 0) await new Promise(r => setTimeout(r, 0));
+    }
+    bar.style.width = '0%';
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const avgSpeed = elapsed > 0 ? file.size / parseFloat(elapsed) : 0;
+    notify(`\u2191 ${file.name} (${formatBytes(file.size)}) \u2014 ${elapsed}s, ${formatSpeed(avgSpeed)}`, 'success');
+  }
+  if (status) status.textContent = '';
+  input.value = '';
+  refreshFiles();
+}
+
+// Drives
+async function loadDrives() {
+  const el = document.getElementById('fm-drives');
+  try {
+    const raw = await sendCmd({ cmd:'drives_list' });
+    const drives = Array.isArray(raw) ? raw : (typeof raw === 'string' ? JSON.parse(raw) : raw);
+    el.innerHTML = '';
+    (drives || []).forEach(d => {
+      const letter = (d.letter || d.drive || '').toString().replace(/[^A-Za-z]/, '').toUpperCase() || '?';
+      const btn = document.createElement('button');
+      btn.className = 'fm-drive-btn';
+      btn.innerHTML = `<span class="drive-icon">💿</span>${letter}:\\ <small style="color:var(--muted)">${d.type || 'drive'}</small>`;
+      btn.onclick = () => navigateTo(letter + ':\\');
+      el.appendChild(btn);
+    });
+  } catch (e) {
+    el.innerHTML = '<button class="fm-drive-btn" onclick="navigateTo(\'C:\\\\\')"><span class="drive-icon">💿</span>C:\\</button>';
+  }
+}
+
+// Context menu
+function showFileContextMenu(e, item) {
+  e.preventDefault();
+  const menu = document.getElementById('ctx-menu');
+  const path = state.currentPath + '\\' + item.name;
+  menu.innerHTML = '';
+  const add = (label, icon, fn, cls='') => {
+    const div = document.createElement('div');
+    div.className = 'ctx-item' + (cls ? ' '+cls : '');
+    div.innerHTML = `${icon} ${label}`;
+    div.onclick = () => { menu.classList.add('hidden'); fn(); };
+    menu.appendChild(div);
+  };
+  if (item.type !== 'dir') {
+    add('Download', '⬇', () => downloadFile(item.name));
+    add('Edit (text)', '✏', () => { navigateToConfig(path); switchPanel('config'); });
+    const sep = document.createElement('div'); sep.className = 'ctx-sep'; menu.appendChild(sep);
+  } else {
+    add('Download folder', '⬇', async () => {
+      notify('Collecting files in ' + item.name + '...', 'info');
+      const files = await collectFilesToDownload(path, item.name);
+      if (!files.length) { notify('Folder is empty', 'warn'); return; }
+      notify(`Downloading ${files.length} file(s) from ${item.name}...`, 'info');
+      let ok = 0;
+      for (let i = 0; i < files.length; i++) {
+        try {
+          const flatName = files[i].saveName.replace(/[\/\\]/g, '_');
+          await downloadFromHost(files[i].path, flatName, true);
+          ok++;
+        } catch(e) {}
+        if (i < files.length - 1) await new Promise(r => setTimeout(r, 100));
+      }
+      notify(`Downloaded ${ok}/${files.length} files from ${item.name}`, ok === files.length ? 'success' : 'warn');
+    });
+    add('Open', '📂', () => navigateTo(path));
+    const sep = document.createElement('div'); sep.className = 'ctx-sep'; menu.appendChild(sep);
+  }
+  add('Rename', '✏', async () => {
+    const n = prompt('New name:', item.name);
+    if (n && n !== item.name) {
+      try { await sendCmd({cmd:'file_rename', from:path, to:state.currentPath+'\\'+n}); refreshFiles(); }
+      catch(e) { notify('Rename error: '+e.message, 'error'); }
+    }
+  });
+  add('Copy path', '📋', () => navigator.clipboard.writeText(path).then(()=>notify('Path copied','success')));
+  const sep2 = document.createElement('div'); sep2.className = 'ctx-sep'; menu.appendChild(sep2);
+  add('Delete', '🗑', async () => {
+    if (!confirm('Delete '+item.name+'?')) return;
+    try { await sendCmd({cmd:'file_delete', path}); refreshFiles(); notify('Deleted','success'); }
+    catch(e) { notify('Delete error: '+e.message, 'error'); }
+  }, 'danger');
+  
+  menu.style.left = e.clientX + 'px';
+  menu.style.top  = e.clientY + 'px';
+  menu.classList.remove('hidden');
+}
+
+document.addEventListener('click', () => document.getElementById('ctx-menu').classList.add('hidden'));
+
+// ═══════════════════════════════════════════════════════════════
+//  PROCESSES
+// ═══════════════════════════════════════════════════════════════
+async function refreshProcesses() {
+  if (!state.hostOnline) return;
+  try {
+    const data = await sendCmd({ cmd:'proc_list' });
+    const procs = typeof data === 'string' ? JSON.parse(data) : data;
+    state.processes = Array.isArray(procs) ? procs : procs.processes || [];
+    renderProcesses(state.processes);
+    document.getElementById('d-proc-count').textContent = state.processes.length;
+  } catch(e) { notify('Process error: '+e.message, 'error'); }
+}
+
+function renderProcesses(procs) {
+  const filter = document.getElementById('proc-search').value.toLowerCase();
+  const filtered = procs.filter(p => !filter || p.name?.toLowerCase().includes(filter));
+  const sorted = [...filtered].sort((a,b) => {
+    let va = a[state.procSortKey]||'', vb = b[state.procSortKey]||'';
+    if (state.procSortKey === 'pid' || state.procSortKey === 'memory' || state.procSortKey === 'threads') { va=Number(va); vb=Number(vb); }
+    const c = va < vb ? -1 : va > vb ? 1 : 0;
+    return state.procSortAsc ? c : -c;
+  });
+
+  const maxMem = Math.max(...procs.map(p=>Number(p.memory)||0));
+  const tbody = document.getElementById('proc-body');
+  tbody.innerHTML = '';
+  sorted.forEach(p => {
+    const mem = Number(p.memory) || 0;
+    const memStr = formatBytes(mem * 1024);
+    const barW = maxMem > 0 ? Math.round(mem/maxMem*60) : 0;
+    const tr = document.createElement('tr');
+    tr.className = 'proc-row' + (state.selectedPid === p.pid ? ' selected' : '');
+    tr.innerHTML = `
+      <td><input type="checkbox" class="proc-cb" data-pid="${p.pid}" /></td>
+      <td style="color:var(--muted)">${p.pid}</td>
+      <td>${escHtml(p.name||'')}</td>
+      <td class="proc-mem">${memStr}<span class="mem-bar" style="width:${barW}px"></span></td>
+      <td style="color:var(--muted)">${p.threads||0}</td>
+      <td><button class="svc-action-btn" style="color:var(--danger);border-color:var(--danger)" onclick="killPid(${p.pid},'${escHtml(p.name)}')">Kill</button></td>`;
+    tr.onclick = () => { state.selectedPid = p.pid; renderProcesses(state.processes); };
+    tbody.appendChild(tr);
+  });
+}
+
+function filterProcesses(q) { renderProcesses(state.processes); }
+function sortProcs(key) {
+  if (state.procSortKey === key) state.procSortAsc = !state.procSortAsc;
+  else { state.procSortKey = key; state.procSortAsc = true; }
+  renderProcesses(state.processes);
+}
+
+async function killPid(pid, name) {
+  if (!confirm(`Kill process ${name} (PID ${pid})?`)) return;
+  try {
+    await sendCmd({ cmd:'proc_kill', pid: String(pid) });
+    notify(`Killed: ${name}`, 'success');
+    addLog(`Killed process ${name} (${pid})`, 'WARN');
+    await refreshProcesses();
+  } catch(e) { notify('Kill error: '+e.message, 'error'); }
+}
+
+async function killSelected() {
+  const cbs = document.querySelectorAll('.proc-cb:checked');
+  if (!cbs.length) { notify('No processes selected', 'warn'); return; }
+  if (!confirm(`Kill ${cbs.length} process(es)?`)) return;
+  for (const cb of cbs) await killPid(Number(cb.dataset.pid), '').catch(()=>{});
+  refreshProcesses();
+}
+
+async function launchProgram() {
+  const exe   = document.getElementById('launch-exe').value.trim();
+  const args  = document.getElementById('launch-args').value;
+  const elev  = document.getElementById('launch-elevate').value;
+  if (!exe) { notify('Enter executable', 'warn'); return; }
+  try {
+    await sendCmd({ cmd:'proc_launch', exe, args, elevate: elev });
+    notify(`Launched: ${exe}`, 'success');
+    addLog(`Launch: ${exe} [${elev}]`, 'OK');
+    setTimeout(refreshProcesses, 1000);
+  } catch(e) { notify('Launch error: '+e.message, 'error'); }
+}
+
+function browseExe() { navigateTo('C:\\Program Files'); switchPanel('files'); }
+
+// ═══════════════════════════════════════════════════════════════
+//  SERVICES
+// ═══════════════════════════════════════════════════════════════
+async function refreshServices() {
+  if (!state.hostOnline) return;
+  try {
+    const data = await sendCmd({ cmd:'svc_list' });
+    const svcs = typeof data === 'string' ? JSON.parse(data) : data;
+    state.services = Array.isArray(svcs) ? svcs : svcs.services || [];
+    renderServices(state.services);
+    const running = state.services.filter(s=>s.status==='running').length;
+    document.getElementById('d-svc-count').textContent = state.services.length;
+    document.getElementById('d-svc-running').textContent = `${running} running`;
+  } catch(e) { notify('Services error: '+e.message, 'error'); }
+}
+
+function renderServices(svcs) {
+  const filter = document.getElementById('svc-search').value.toLowerCase();
+  const filtered = svcs.filter(s => !filter || s.name?.toLowerCase().includes(filter) || s.display?.toLowerCase().includes(filter));
+  const sorted = [...filtered].sort((a,b) => {
+    let va = a[state.svcSortKey]||'', vb = b[state.svcSortKey]||'';
+    const c = va < vb ? -1 : va > vb ? 1 : 0;
+    return state.svcSortAsc ? c : -c;
+  });
+
+  const tbody = document.getElementById('svc-body');
+  tbody.innerHTML = '';
+  sorted.forEach(s => {
+    const statusClass = {running:'status-running',stopped:'status-stopped',paused:'status-paused'}[s.status]||'status-unknown';
+    const tr = document.createElement('tr');
+    tr.className = 'svc-row';
+    tr.innerHTML = `
+      <td style="font-family:var(--mono);font-size:11px">${escHtml(s.name||'')}</td>
+      <td>${escHtml(s.display||s.name||'')}</td>
+      <td><span class="status-badge ${statusClass}">${s.status||'unknown'}</span></td>
+      <td style="color:var(--muted);font-size:11px">${s.start_type||'—'}</td>
+      <td>
+        <div class="svc-actions">
+          <button class="svc-action-btn" onclick="svcControl('${escHtml(s.name)}','start')">Start</button>
+          <button class="svc-action-btn" onclick="svcControl('${escHtml(s.name)}','stop')">Stop</button>
+          <button class="svc-action-btn" onclick="svcControl('${escHtml(s.name)}','restart')">Restart</button>
+        </div>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function filterServices(q) { renderServices(state.services); }
+function sortSvcs(key) {
+  if (state.svcSortKey === key) state.svcSortAsc = !state.svcSortAsc;
+  else { state.svcSortKey = key; state.svcSortAsc = true; }
+  renderServices(state.services);
+}
+
+async function svcControl(name, action) {
+  try {
+    await sendCmd({ cmd:'svc_control', name, action });
+    notify(`${action}: ${name}`, 'success');
+    addLog(`Service ${action}: ${name}`, 'OK');
+    setTimeout(refreshServices, 1000);
+  } catch(e) { notify('Service error: '+e.message, 'error'); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CONFIG EDITOR
+// ═══════════════════════════════════════════════════════════════
+const cfgEd = document.getElementById('config-editor');
+cfgEd.oninput = () => {
+  document.getElementById('cfg-lines').textContent = 'Lines: ' + cfgEd.value.split('\n').length;
+  document.getElementById('cfg-chars').textContent = 'Chars: ' + cfgEd.value.length;
+  document.getElementById('cfg-modified').style.display = '';
+};
+
+function navigateToConfig(path) {
+  document.getElementById('config-path-input').value = path;
+}
+
+async function loadConfigFile() {
+  const path = document.getElementById('config-path-input').value.trim();
+  if (!path) { notify('Enter a file path', 'warn'); return; }
+  try {
+    const text = await sendCmd({ cmd:'config_read', path });
+    cfgEd.value = text;
+    document.getElementById('cfg-lines').textContent = 'Lines: ' + text.split('\n').length;
+    document.getElementById('cfg-chars').textContent = 'Chars: ' + text.length;
+    document.getElementById('cfg-modified').style.display = 'none';
+    addRecentConfig(path);
+    notify('Loaded: ' + path, 'success');
+  } catch(e) { notify('Load error: '+e.message, 'error'); }
+}
+
+async function saveConfigFile() {
+  const path = document.getElementById('config-path-input').value.trim();
+  if (!path) { notify('Enter a file path', 'warn'); return; }
+  try {
+    await sendCmd({ cmd:'config_write', path, text: cfgEd.value });
+    document.getElementById('cfg-modified').style.display = 'none';
+    notify('Saved: ' + path, 'success');
+    addLog('Config saved: ' + path, 'OK');
+  } catch(e) { notify('Save error: '+e.message, 'error'); }
+}
+
+function formatJson() {
+  try {
+    const obj = JSON.parse(cfgEd.value);
+    cfgEd.value = JSON.stringify(obj, null, 2);
+    notify('Formatted JSON', 'success');
+  } catch { notify('Not valid JSON', 'warn'); }
+}
+
+function findInEditor() {
+  const q = prompt('Find:');
+  if (!q) return;
+  const idx = cfgEd.value.indexOf(q);
+  if (idx >= 0) {
+    cfgEd.focus();
+    cfgEd.setSelectionRange(idx, idx + q.length);
+    notify(`Found at position ${idx}`, 'success');
+  } else { notify('Not found', 'warn'); }
+}
+
+function clearEditor() { cfgEd.value = ''; }
+
+function addRecentConfig(path) {
+  state.recentConfigs = [path, ...state.recentConfigs.filter(p=>p!==path)].slice(0,5);
+  const el = document.getElementById('recent-list');
+  el.innerHTML = '';
+  state.recentConfigs.forEach(p => {
+    const btn = document.createElement('button');
+    btn.className = 'fm-btn';
+    btn.style.fontSize = '10px';
+    btn.textContent = p.split('\\').pop();
+    btn.title = p;
+    btn.onclick = () => { document.getElementById('config-path-input').value = p; loadConfigFile(); };
+    el.appendChild(btn);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  TERMINAL (remote cmd via file_write + proc_launch hack)
+// ═══════════════════════════════════════════════════════════════
+function addTermLine(text, cls='line-out') {
+  const out = document.getElementById('term-output');
+  const div = document.createElement('div');
+  div.className = cls;
+  div.textContent = text;
+  out.appendChild(div);
+  out.scrollTop = out.scrollHeight;
+}
+
+function clearTerminal() { document.getElementById('term-output').innerHTML = ''; }
+
+// Terminal working directory (client-side tracking)
+let termCwd = 'C:\\';
+
+async function handleTermKey(e) {
+  if (e.key === 'Enter') {
+    const input = document.getElementById('term-input');
+    const cmd = input.value.trim();
+    if (!cmd) return;
+    state.termHistory.unshift(cmd);
+    state.termHistIdx = -1;
+    input.value = '';
+    addTermLine(termCwd + '> ' + cmd, 'line-cmd');
+
+    // Parse cd command — send to host so cwd actually changes
+    if (cmd.toLowerCase().startsWith('cd ') || cmd.toLowerCase() === 'cd') {
+      const newDir = cmd.slice(3).trim();
+      if (!state.hostOnline) { addTermLine('[Host not online]', 'line-err'); return; }
+      try {
+        // Execute cd and then echo cwd to capture new path
+        const text = await sendCmd({ cmd:'term_exec', line: 'cd ' + (newDir ? '"' + newDir + '"' : '') + ' && cd' }).catch(() => '');
+        if (text && text.trim()) {
+          termCwd = text.trim().split('\n').pop().trim();
+          document.getElementById('term-prompt').textContent = termCwd + '>';
+          addTermLine('[Directory: ' + termCwd + ']', 'line-info');
+        }
+      } catch(err) { addTermLine('[Error: ' + err.message + ']', 'line-err'); }
+      return;
+    }
+
+    if (!state.hostOnline) { addTermLine('[Host not online]', 'line-err'); return; }
+    try {
+      // Prepend cd to ensure command runs in tracked directory
+      const fullCmd = 'cd /d "' + termCwd + '" && ' + cmd;
+      const text = await sendCmd({ cmd:'term_exec', line: fullCmd }).catch(()=>'');
+      if (text) text.split(/\r?\n/).forEach(l => addTermLine(l, 'line-out'));
+    } catch(err) { addTermLine('[Error: ' + err.message + ']', 'line-err'); }
+  }
+  if (e.key === 'ArrowUp') {
+    state.termHistIdx = Math.min(state.termHistIdx+1, state.termHistory.length-1);
+    document.getElementById('term-input').value = state.termHistory[state.termHistIdx] || '';
+  }
+  if (e.key === 'ArrowDown') {
+    state.termHistIdx = Math.max(state.termHistIdx-1, -1);
+    document.getElementById('term-input').value = state.termHistIdx >= 0 ? state.termHistory[state.termHistIdx] : '';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  DASHBOARD
+// ═══════════════════════════════════════════════════════════════
+async function refreshDashboard() {
+  if (!state.hostOnline) return;
+  try {
+    const info = await sendCmd({ cmd:'sys_info' });
+    const d = typeof info === 'string' ? JSON.parse(info) : info;
+    document.getElementById('d-ram-pct').textContent = d.ram_used_pct + '%';
+    document.getElementById('d-ram-info').textContent = formatBytes((d.ram_total_mb - d.ram_avail_mb) * 1048576) + ' / ' + formatBytes(d.ram_total_mb * 1048576);
+    document.getElementById('d-ram-bar').style.width = d.ram_used_pct + '%';
+    const cpuPct = (d.cpu_pct != null && d.cpu_pct >= 0) ? d.cpu_pct : null;
+    const gpuPct = (d.gpu_pct != null && d.gpu_pct >= 0) ? d.gpu_pct : null;
+    document.getElementById('d-cpu-pct').textContent = cpuPct != null ? (cpuPct + '%') : '—';
+    document.getElementById('d-cpu-bar').style.width = (cpuPct != null ? cpuPct : 0) + '%';
+    document.getElementById('d-gpu-pct').textContent = gpuPct != null ? (gpuPct + '%') : '—';
+    document.getElementById('d-gpu-bar').style.width = (gpuPct != null ? gpuPct : 0) + '%';
+    document.getElementById('d-hostname').textContent = d.hostname || '—';
+    document.getElementById('d-username').textContent = 'User: ' + (d.username || '—');
+    
+    const upS = d.uptime_s || 0;
+    const h = Math.floor(upS/3600), m = Math.floor((upS%3600)/60);
+    document.getElementById('d-uptime').textContent = h + 'h';
+    document.getElementById('d-uptime-sub').textContent = `${h}h ${m}m uptime`;
+    
+    const cpuStr = (d.cpu_pct != null && d.cpu_pct >= 0) ? (d.cpu_pct + '%') : '—';
+    const gpuStr = (d.gpu_pct != null && d.gpu_pct >= 0) ? (d.gpu_pct + '%') : '—';
+    document.getElementById('sys-info-bar').textContent = `${d.hostname} | RAM: ${d.ram_used_pct}% | CPU: ${cpuStr} | GPU: ${gpuStr} | Up: ${h}h ${m}m`;
+    document.getElementById('d-codec').textContent = 'Codec: ' + state.codec;
+    addLog(`Dashboard refreshed — RAM: ${d.ram_used_pct}%`, 'INFO');
+  } catch {}
+  
+  // Load drives for file manager
+  loadDrives();
+}
+
+// Auto-refresh dashboard every 30s
+setInterval(() => {
+  if (state.hostOnline && document.getElementById('panel-dashboard').classList.contains('active')) {
+    refreshDashboard();
+  }
+}, 30000);
+
+// ═══════════════════════════════════════════════════════════════
+//  UTILS
+// ═══════════════════════════════════════════════════════════════
+function formatBytes(b) {
+  b = Number(b);
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+  if (b < 1073741824) return (b/1048576).toFixed(1) + ' MB';
+  return (b/1073741824).toFixed(2) + ' GB';
+}
+function formatSpeed(bytesPerSec) {
+  if (bytesPerSec <= 0) return '-- MB/s';
+  if (bytesPerSec < 1048576) return (bytesPerSec/1024).toFixed(0) + ' KB/s';
+  return (bytesPerSec/1048576).toFixed(1) + ' MB/s';
+}
+function formatETA(seconds) {
+  if (!seconds || seconds <= 0 || !isFinite(seconds)) return '--:--';
+  seconds = Math.ceil(seconds);
+  if (seconds > 3600) return Math.floor(seconds/3600) + ':' + String(Math.floor((seconds%3600)/60)).padStart(2,'0') + ':' + String(seconds%60).padStart(2,'0');
+  return Math.floor(seconds/60) + ':' + String(seconds%60).padStart(2,'0');
+}
+
+function getFileIcon(name) {
+  const ext = name.split('.').pop().toLowerCase();
+  const map = {
+    exe:'⚙',dll:'🔧',bat:'📜',cmd:'📜',ps1:'🔷',
+    txt:'📄',log:'📋',ini:'⚙',cfg:'⚙',json:'📋',xml:'📋',yaml:'📋',yml:'📋',
+    jpg:'🖼',jpeg:'🖼',png:'🖼',gif:'🖼',bmp:'🖼',svg:'🖼',ico:'🖼',
+    mp4:'🎬',avi:'🎬',mkv:'🎬',mov:'🎬',
+    mp3:'🎵',wav:'🎵',flac:'🎵',
+    zip:'📦',rar:'📦','7z':'📦',tar:'📦',gz:'📦',
+    pdf:'📕',doc:'📝',docx:'📝',xls:'📊',xlsx:'📊',ppt:'📊',pptx:'📊',
+    html:'🌐',css:'🎨',js:'📜',py:'🐍',cpp:'⚡',c:'⚡',cs:'💎',java:'☕',
+  };
+  return map[ext] || '📄';
+}
+
+// Fullscreen button
+document.getElementById('btn-fullscreen').onclick = requestFullscreen;
+
+// Enter on modal
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !document.getElementById('modal-overlay').classList.contains('hidden')) {
+    connectToServer();
+  }
+});
+
+// Pre-fill Server and Port from current page URL (so no need to re-enter when opened by IP)
+// Then restore saved connection if any
+(function() {
+  const inServer = document.getElementById('in-server');
+  const inPort = document.getElementById('in-port');
+  const inToken = document.getElementById('in-token');
+  const inPass = document.getElementById('in-pass');
+  const defaultPort = (window.location.port && window.location.port !== '') ? window.location.port : (window.location.protocol === 'https:' ? '443' : '80');
+  if (inServer) inServer.value = window.location.hostname || '';
+  if (inPort) inPort.value = defaultPort;
+  const inSsl = document.getElementById('in-ssl');
+  if (inSsl && window.location.protocol === 'https:') inSsl.checked = true;
+  try {
+    const s = localStorage.getItem('rdp_server');
+    const p = localStorage.getItem('rdp_port');
+    const t = localStorage.getItem('rdp_token');
+    const pw = localStorage.getItem('rdp_password');
+    if (s && inServer) inServer.value = s;
+    if (p && inPort) inPort.value = p;
+    if (t && inToken) inToken.value = t;
+    if (pw && inPass) inPass.value = pw;
+  } catch (e) { /* incognito or storage blocked */ }
+})();
+
+addLog('RemoteDesk PRO initialized', 'OK');
+addLog('Click CONNECT to begin', 'INFO');
+</script>
+</body>
+</html>
