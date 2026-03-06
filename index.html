@@ -1772,7 +1772,26 @@ function handleBinary(buf) {
 
   const sig = String.fromCharCode(arr[0], arr[1], arr[2], arr[3]);
 
+  if (sig === 'SCR2') {
+    // New protocol: SCR2(4) + codec(1) + flags(1) + width(4) + height(4) + data
+    if (!state.streaming) return;
+    if (arr.length < 14) return;
+    const dv = new DataView(buf);
+    const codec = arr[4];    // 0=JPEG, 1=H264
+    const flags = arr[5];    // bit0=keyframe
+    const w = dv.getUint32(6, true);
+    const h = dv.getUint32(10, true);
+    const frameData = new Uint8Array(buf, 14);
+    if (codec === 1) {
+      renderH264Frame(frameData, w, h, !!(flags & 1), buf.byteLength);
+    } else {
+      renderFrame(frameData, w, h, buf.byteLength);
+    }
+    return;
+  }
+
   if (sig === 'SCRN') {
+    // Legacy JPEG protocol
     if (!state.streaming) return;
     if (arr.length < 12) return;
     const w = new DataView(buf).getUint32(4, true);
@@ -1882,6 +1901,96 @@ let fitMode = true;
 const _frameImg = new Image();
 let _framePendingUrl = null;
 let _lastCanvasW = 0, _lastCanvasH = 0;
+
+// ── H.264 WebCodecs decoder ──
+let _h264Decoder = null;
+let _h264Configured = false;
+let _h264Timestamp = 0;
+let _h264WaitingForKey = true;
+
+function initH264Decoder() {
+  if (_h264Decoder) return;
+  if (typeof VideoDecoder === 'undefined') {
+    console.warn('WebCodecs VideoDecoder not available — H.264 won\'t work, use JPEG');
+    return;
+  }
+  _h264Decoder = new VideoDecoder({
+    output: (frame) => {
+      const w = frame.displayWidth;
+      const h = frame.displayHeight;
+      if (_lastCanvasW !== w || _lastCanvasH !== h) {
+        canvas.width = w; canvas.height = h;
+        _lastCanvasW = w; _lastCanvasH = h;
+      }
+      ctx2d.drawImage(frame, 0, 0);
+      frame.close();
+      document.getElementById('no-stream').style.display = 'none';
+      document.getElementById('stream-stats').classList.remove('hidden');
+      document.getElementById('st-res').textContent = `${w}×${h}`;
+    },
+    error: (e) => {
+      console.error('H264 decode error:', e);
+      _h264WaitingForKey = true;
+    }
+  });
+  _h264Configured = false;
+  _h264WaitingForKey = true;
+  _h264Timestamp = 0;
+}
+
+function closeH264Decoder() {
+  if (_h264Decoder) {
+    try { _h264Decoder.close(); } catch(e){}
+    _h264Decoder = null;
+  }
+  _h264Configured = false;
+  _h264WaitingForKey = true;
+}
+
+function renderH264Frame(data, w, h, isKeyframe, totalBytes) {
+  state.frameCount++;
+  state.streamBytesThisSecond += totalBytes;
+
+  if (!_h264Decoder) initH264Decoder();
+  if (!_h264Decoder) return;  // WebCodecs not available
+
+  // Configure decoder on first keyframe
+  if (!_h264Configured && isKeyframe) {
+    try {
+      _h264Decoder.configure({
+        codec: 'avc1.42001f',  // Baseline Profile Level 3.1
+        codedWidth: w,
+        codedHeight: h,
+        optimizeForLatency: true
+      });
+      _h264Configured = true;
+      _h264WaitingForKey = false;
+    } catch(e) {
+      console.error('H264 configure error:', e);
+      return;
+    }
+  }
+
+  // Reconfigure if resolution changed
+  if (_h264Configured && _h264Decoder.state === 'configured') {
+    // Skip non-keyframes until we get a keyframe
+    if (_h264WaitingForKey && !isKeyframe) return;
+    if (isKeyframe) _h264WaitingForKey = false;
+
+    try {
+      const chunk = new EncodedVideoChunk({
+        type: isKeyframe ? 'key' : 'delta',
+        timestamp: _h264Timestamp,
+        data: data
+      });
+      _h264Timestamp += 1000000 / Math.max(1, state.fps || 30);  // microseconds
+      _h264Decoder.decode(chunk);
+    } catch(e) {
+      console.error('H264 decode chunk error:', e);
+      _h264WaitingForKey = true;
+    }
+  }
+}
 
 function renderFrame(jpegArr, w, h, totalBytes) {
   state.frameCount++;
@@ -2024,13 +2133,20 @@ document.getElementById('btn-stream-toggle').onclick = async () => {
 
 function parseScrnAndRender(buf) {
   const arr = new Uint8Array(buf);
-  if (arr.length < 12) return;
+  if (arr.length < 4) return;
   const sig = String.fromCharCode(arr[0], arr[1], arr[2], arr[3]);
-  if (sig !== 'SCRN') return;
-  const w = new DataView(buf).getUint32(4, true);
-  const h = new DataView(buf).getUint32(8, true);
-  const jpeg = new Uint8Array(buf, 12);
-  renderFrame(jpeg, w, h, buf.byteLength);
+  if (sig === 'SCR2' && arr.length >= 14) {
+    const dv = new DataView(buf);
+    const codec = arr[4], flags = arr[5];
+    const w = dv.getUint32(6, true), h = dv.getUint32(10, true);
+    const data = new Uint8Array(buf, 14);
+    if (codec === 1) renderH264Frame(data, w, h, !!(flags & 1), buf.byteLength);
+    else renderFrame(data, w, h, buf.byteLength);
+  } else if (sig === 'SCRN' && arr.length >= 12) {
+    const w = new DataView(buf).getUint32(4, true);
+    const h = new DataView(buf).getUint32(8, true);
+    renderFrame(new Uint8Array(buf, 12), w, h, buf.byteLength);
+  }
 }
 
 async function startStream() {
@@ -2159,6 +2275,7 @@ async function startStream() {
 async function stopStream() {
   state.streaming = false;
   state.streamOverWebRTC = false;
+  closeH264Decoder();
   if (state.streamDc) { state.streamDc.close(); state.streamDc = null; }
   if (state.streamPc) { state.streamPc.close(); state.streamPc = null; }
   if (state.streamWs) { try { state.streamWs.close(); } catch(e){} state.streamWs = null; }

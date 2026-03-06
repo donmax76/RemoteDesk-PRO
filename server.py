@@ -440,8 +440,8 @@ async def handler(websocket, path: str):
                     except:
                         log.warning(f"Failed to forward binary to host")
                 elif role == "host" or role == "host_stream":
-                    if len(raw_msg) >= 4 and raw_msg[:4] == b'SCRN':
-                        # SCRN frames → ONLY to stream_clients, NOT to command clients
+                    if len(raw_msg) >= 4 and raw_msg[:4] in (b'SCRN', b'SCR2'):
+                        # SCRN/SCR2 frames → ONLY to stream_clients, NOT to command clients
                         # Fire-and-forget: never blocks the host handler
                         enqueue_scrn_to_stream_clients(room, raw_msg)
                     elif role == "host":

@@ -57,6 +57,7 @@ public:
 
     void stop() {
         initialized_ = false;
+        staging_.Reset();
         duplication_.Reset();
         d3dDevice_.Reset();
         d3dContext_.Reset();
@@ -120,6 +121,13 @@ private:
     ComPtr<IDXGIOutputDuplication> duplication_;
     int screen_w_=0, screen_h_=0;
 
+    // Cached staging texture (avoid re-creating per frame)
+    ComPtr<ID3D11Texture2D> staging_;
+    D3D11_TEXTURE2D_DESC staging_desc_{};
+    // Nearest-neighbor x-coordinate lookup (cached)
+    std::vector<int> nn_xmap_;
+    int nn_xmap_tw_ = 0, nn_xmap_sw_ = 0;
+
     int dxgi_fail_count_ = 0;
     int dxgi_retry_interval_s_ = 3;
     std::chrono::steady_clock::time_point last_dxgi_retry_ = std::chrono::steady_clock::now();
@@ -162,6 +170,7 @@ private:
     void handle_dxgi_lost() {
         ++dxgi_fail_count_;
         LOG_WARN("DXGI ACCESS_LOST (count=" + std::to_string(dxgi_fail_count_) + ")");
+        staging_.Reset();
         duplication_.Reset(); d3dDevice_.Reset(); d3dContext_.Reset();
         if (!init_dxgi()) {
             use_gdi_ = true; dxgi_retry_interval_s_ = 3;
@@ -177,7 +186,7 @@ private:
         if (!duplication_) return false;
         DXGI_OUTDUPL_FRAME_INFO fi{};
         ComPtr<IDXGIResource> res;
-        HRESULT hr = duplication_->AcquireNextFrame(100, &fi, &res);
+        HRESULT hr = duplication_->AcquireNextFrame(50, &fi, &res);
         if (hr == DXGI_ERROR_WAIT_TIMEOUT) return false;
         if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_INVALID_CALL) { handle_dxgi_lost(); return false; }
         if (FAILED(hr)) { use_gdi_ = true; dxgi_retry_interval_s_ = 5; last_dxgi_retry_ = std::chrono::steady_clock::now(); return false; }
@@ -188,25 +197,75 @@ private:
         if (FAILED(res.As(&tex))) return false;
         D3D11_TEXTURE2D_DESC td{}; tex->GetDesc(&td);
 
+        // Cache staging texture (avoid GPU alloc per frame)
         D3D11_TEXTURE2D_DESC sd = td;
         sd.Usage = D3D11_USAGE_STAGING; sd.BindFlags = 0; sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ; sd.MiscFlags = 0;
-        ComPtr<ID3D11Texture2D> staging;
-        if (FAILED(d3dDevice_->CreateTexture2D(&sd, nullptr, &staging))) return false;
-        d3dContext_->CopyResource(staging.Get(), tex.Get());
+        if (!staging_ || staging_desc_.Width != sd.Width || staging_desc_.Height != sd.Height) {
+            staging_.Reset();
+            if (FAILED(d3dDevice_->CreateTexture2D(&sd, nullptr, &staging_))) return false;
+            staging_desc_ = sd;
+        }
+        d3dContext_->CopyResource(staging_.Get(), tex.Get());
 
         D3D11_MAPPED_SUBRESOURCE mapped{};
-        if (FAILED(d3dContext_->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) return false;
+        if (FAILED(d3dContext_->Map(staging_.Get(), 0, D3D11_MAP_READ, 0, &mapped))) return false;
 
-        raw.src_width  = td.Width;
-        raw.src_height = td.Height;
-        raw.src_stride = mapped.RowPitch;
-        raw.target_width  = td.Width  * scale_ / 100;
-        raw.target_height = td.Height * scale_ / 100;
-        size_t bytes = (size_t)mapped.RowPitch * td.Height;
-        raw.pixels.resize(bytes);
-        memcpy(raw.pixels.data(), mapped.pData, bytes);
+        int src_w = (int)td.Width;
+        int src_h = (int)td.Height;
+        int tw = src_w * scale_ / 100;
+        int th = src_h * scale_ / 100;
+        if (tw < 1) tw = 1;
+        if (th < 1) th = 1;
 
-        d3dContext_->Unmap(staging.Get(), 0);
+        if (scale_ >= 100) {
+            // No scaling — tight-copy rows (remove GPU row padding)
+            raw.src_width  = src_w;
+            raw.src_height = src_h;
+            raw.src_stride = src_w * 4;
+            raw.target_width  = src_w;
+            raw.target_height = src_h;
+            size_t row_bytes = (size_t)src_w * 4;
+            raw.pixels.resize(row_bytes * src_h);
+            const uint8_t* s = (const uint8_t*)mapped.pData;
+            uint8_t* d = raw.pixels.data();
+            for (int y = 0; y < src_h; y++) {
+                memcpy(d, s, row_bytes);
+                s += mapped.RowPitch;
+                d += row_bytes;
+            }
+        } else {
+            // Nearest-neighbor downscale directly from GPU texture
+            raw.src_width  = tw;
+            raw.src_height = th;
+            raw.src_stride = tw * 4;
+            raw.target_width  = tw;
+            raw.target_height = th;
+            raw.pixels.resize((size_t)tw * th * 4);
+
+            // Cache x-coordinate lookup table
+            if (nn_xmap_tw_ != tw || nn_xmap_sw_ != src_w) {
+                nn_xmap_.resize(tw);
+                for (int x = 0; x < tw; x++)
+                    nn_xmap_[x] = x * src_w / tw;
+                nn_xmap_tw_ = tw;
+                nn_xmap_sw_ = src_w;
+            }
+
+            const uint8_t* src = (const uint8_t*)mapped.pData;
+            uint32_t* dst = (uint32_t*)raw.pixels.data();
+            int src_stride = mapped.RowPitch;
+
+            for (int y = 0; y < th; y++) {
+                int sy = y * src_h / th;
+                const uint32_t* src_row = (const uint32_t*)(src + (size_t)sy * src_stride);
+                for (int x = 0; x < tw; x++) {
+                    dst[x] = src_row[nn_xmap_[x]];
+                }
+                dst += tw;
+            }
+        }
+
+        d3dContext_->Unmap(staging_.Get(), 0);
         return true;
     }
 

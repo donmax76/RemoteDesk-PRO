@@ -7,6 +7,7 @@
 #include "logger.h"
 #include "ws_client.h"
 #include "screen_capture.h"
+#include "h264_encoder.h"
 #include "file_manager.h"
 #include "process_manager.h"
 #ifdef USE_WEBRTC_STREAM
@@ -38,6 +39,11 @@ static std::mutex g_raw_mtx;
 static std::condition_variable g_raw_cv;
 static std::shared_ptr<ScreenCapture::RawFrame> g_latest_raw;
 static std::atomic<uint64_t> g_frame_seq{0};
+
+// H.264 encoder (one per encode worker — initialized lazily)
+static std::mutex g_h264_mtx;
+static std::unique_ptr<H264Encoder> g_h264_encoder;
+static std::atomic<bool> g_h264_keyframe_requested{false};
 
 // Adaptive quality
 static std::atomic<int> g_adaptive_quality{75};
@@ -106,45 +112,58 @@ static void recording_write_frame(const std::vector<uint8_t>& frame_data) {
     ++g_rec_frame_count;
 }
 
-// ===== Adaptive quality =====
-static void update_adaptive_quality(size_t frame_bytes) {
-    // Simple heuristic: large frames = complex content = reduce quality for bandwidth
-    // Target: keep frames under ~80KB for stable FPS over typical connections
-    static std::atomic<int> adjust_counter{0};
-    int cnt = ++adjust_counter;
-    if (cnt % 10 != 0) return;  // Adjust every 10 frames
+// ===== Adaptive quality (time-based, every frame) =====
+static std::atomic<int> g_sent_frames{0};
+static std::atomic<int64_t> g_fps_log_time{0};
 
+static void update_adaptive_quality(int64_t encode_send_ms, size_t frame_bytes) {
     int current = g_adaptive_quality.load();
-    int max_q = g_quality;  // User-configured maximum
+    int max_q = g_quality;
+    int target_ms = 1000 / std::max(5, g_fps);  // e.g. 33ms for 30fps
 
-    if (frame_bytes > 200000) {
-        // Very large frame: aggressive reduction
-        g_adaptive_quality = std::max(15, current - 8);
-    } else if (frame_bytes > 120000) {
-        // Large frame: moderate reduction
-        g_adaptive_quality = std::max(15, current - 3);
-    } else if (frame_bytes > 80000) {
-        // Slightly large: gentle reduction
-        g_adaptive_quality = std::max(15, current - 1);
-    } else if (frame_bytes < 40000 && current < max_q) {
-        // Small frame: can increase quality
-        g_adaptive_quality = std::min(max_q, current + 2);
+    if (encode_send_ms > target_ms * 3) {
+        // Extremely slow: emergency drop
+        g_adaptive_quality = std::max(10, current - 20);
+    } else if (encode_send_ms > target_ms * 2) {
+        // Very slow: aggressive drop
+        g_adaptive_quality = std::max(10, current - 10);
+    } else if (encode_send_ms > target_ms) {
+        // Too slow: moderate drop
+        g_adaptive_quality = std::max(10, current - 5);
+    } else if (encode_send_ms > target_ms * 3 / 4) {
+        // Slightly slow: gentle drop
+        g_adaptive_quality = std::max(10, current - 2);
+    } else if (encode_send_ms < target_ms / 2 && frame_bytes < 60000 && current < max_q) {
+        // Fast + small frames: can increase quality slowly
+        g_adaptive_quality = std::min(max_q, current + 1);
     }
 }
 
 // ===== Multi-threaded stream pipeline =====
 
-// Build SCRN binary message from encoded frame
-static std::vector<uint8_t> build_scrn_msg(const ScreenCapture::Frame& fr) {
+// Build SCR2 binary message (new protocol, supports JPEG + H.264)
+// Format: SCR2(4) + codec(1) + flags(1) + width(4) + height(4) + data
+// codec: 0=JPEG, 1=H264   flags: bit0=keyframe
+static std::vector<uint8_t> build_scrn_msg(int width, int height,
+    const uint8_t* data, size_t data_size, uint8_t codec, bool keyframe)
+{
     std::vector<uint8_t> msg;
-    msg.reserve(12 + fr.jpeg_data.size());
-    const char hdr[4] = {'S','C','R','N'};
+    msg.reserve(14 + data_size);
+    const char hdr[4] = {'S','C','R','2'};
     msg.insert(msg.end(), hdr, hdr+4);
-    uint32_t w = fr.width, h = fr.height;
+    msg.push_back(codec);
+    msg.push_back(keyframe ? 1 : 0);
+    uint32_t w = width, h = height;
     msg.insert(msg.end(), reinterpret_cast<uint8_t*>(&w), reinterpret_cast<uint8_t*>(&w)+4);
     msg.insert(msg.end(), reinterpret_cast<uint8_t*>(&h), reinterpret_cast<uint8_t*>(&h)+4);
-    msg.insert(msg.end(), fr.jpeg_data.begin(), fr.jpeg_data.end());
+    msg.insert(msg.end(), data, data + data_size);
     return msg;
+}
+
+// JPEG convenience wrapper
+static std::vector<uint8_t> build_scrn_msg(const ScreenCapture::Frame& fr) {
+    return build_scrn_msg(fr.width, fr.height,
+        fr.jpeg_data.data(), fr.jpeg_data.size(), 0, false);
 }
 
 // Capture thread: captures raw pixels at target FPS
@@ -187,11 +206,26 @@ static void stream_capture_func() {
     g_log.info("Capture thread stopped");
 }
 
-// Encode worker: takes raw frames, encodes JPEG, sends via assigned connection
+// Encode worker: takes raw frames, encodes (JPEG or H.264), sends via connection
 static void stream_encode_func(int worker_id) {
-    g_log.info("Encode worker " + std::to_string(worker_id) + " started");
+    g_log.info("Encode worker " + std::to_string(worker_id) + " started, codec=" + g_codec);
     uint64_t last_seq = 0;
     int n_conns = std::max(1, (int)g_stream_ws.size());
+    bool use_h264 = (g_codec == "h264" || g_codec == "h265");
+
+    // H.264: only worker 0 encodes (MFT is single-threaded)
+    // Other workers skip when using H.264
+    if (use_h264 && worker_id != 0) {
+        g_log.info("Encode worker " + std::to_string(worker_id) + " idle (H.264 uses worker 0 only)");
+        while (g_streaming && g_running)
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        return;
+    }
+
+    // Init H.264 encoder for worker 0
+    if (use_h264 && worker_id == 0) {
+        // Will initialize on first frame when we know dimensions
+    }
 
     while (g_streaming && g_running) {
         std::shared_ptr<ScreenCapture::RawFrame> raw;
@@ -202,40 +236,78 @@ static void stream_encode_func(int worker_id) {
             });
             if (!g_streaming) break;
             if (!g_latest_raw || g_frame_seq <= last_seq) continue;
-            raw = std::exchange(g_latest_raw, {});  // Take and clear (first worker wins)
+            raw = std::exchange(g_latest_raw, {});  // Take and clear
             last_seq = g_frame_seq;
         }
         if (!raw) continue;
 
-        // Encode with adaptive quality
-        ScreenCapture::Frame fr;
-        int quality = g_adaptive_quality.load();
-        g_screen.encode_raw(*raw, fr, quality);
-        raw.reset();  // Free raw pixels immediately
+        auto t0 = std::chrono::steady_clock::now();
+        std::vector<uint8_t> msg;
+        size_t frame_bytes = 0;
 
-        if (fr.jpeg_data.empty() || !g_streaming) continue;
+        if (use_h264) {
+            // ── H.264 path ──
+            int w = raw->target_width > 0 ? raw->target_width : raw->src_width;
+            int h = raw->target_height > 0 ? raw->target_height : raw->src_height;
 
-        // Update adaptive quality based on frame size
-        update_adaptive_quality(fr.jpeg_data.size());
+            // Lazy init / reinit on resolution change
+            {
+                std::lock_guard<std::mutex> lk(g_h264_mtx);
+                if (!g_h264_encoder || !g_h264_encoder->is_initialized() ||
+                    g_h264_encoder->get_width() != w || g_h264_encoder->get_height() != h)
+                {
+                    g_h264_encoder.reset();
+                    auto enc = std::make_unique<H264Encoder>();
+                    int bitrate = std::max(500, std::min(8000, w * h * g_fps / 12000));
+                    if (enc->init(w, h, g_fps, bitrate)) {
+                        g_h264_encoder = std::move(enc);
+                    } else {
+                        g_log.error("H.264 encoder init failed, falling back to JPEG");
+                        use_h264 = false;
+                    }
+                }
+            }
 
-        // Build SCRN message
-        auto msg = build_scrn_msg(fr);
+            if (use_h264 && g_h264_encoder) {
+                bool want_key = g_h264_keyframe_requested.exchange(false);
+                auto encoded = g_h264_encoder->encode(raw->pixels.data(), raw->src_stride, want_key);
+                raw.reset();
+
+                if (!encoded.data.empty() && g_streaming) {
+                    msg = build_scrn_msg(w, h, encoded.data.data(), encoded.data.size(),
+                                         1, encoded.is_keyframe);
+                    frame_bytes = encoded.data.size();
+                }
+            }
+        }
+
+        if (!use_h264) {
+            // ── JPEG path ──
+            ScreenCapture::Frame fr;
+            int quality = g_adaptive_quality.load();
+            g_screen.encode_raw(*raw, fr, quality);
+            raw.reset();
+
+            if (!fr.jpeg_data.empty() && g_streaming) {
+                frame_bytes = fr.jpeg_data.size();
+                msg = build_scrn_msg(fr);
+                if (g_recording) recording_write_frame(fr.jpeg_data);
+            }
+        }
+
+        if (msg.empty() || !g_streaming) continue;
 
 #ifdef USE_WEBRTC_STREAM
-        if (webrtc_stream::send_frame(msg.data(), msg.size())) {
-            if (g_recording) recording_write_frame(fr.jpeg_data);
-            continue;
-        }
+        if (webrtc_stream::send_frame(msg.data(), msg.size())) continue;
 #endif
 
-        // Send via assigned stream connection (round-robin)
+        // Send via stream connection (round-robin)
         bool sent = false;
         int idx = worker_id % n_conns;
         if (idx < (int)g_stream_ws.size() && g_stream_ws[idx] && g_stream_ws[idx]->is_connected()) {
             g_stream_ws[idx]->send_binary(msg);
             sent = true;
         }
-        // Fallback: try any available connection
         if (!sent) {
             for (int i = 0; i < (int)g_stream_ws.size(); i++) {
                 if (g_stream_ws[i] && g_stream_ws[i]->is_connected()) {
@@ -245,12 +317,39 @@ static void stream_encode_func(int worker_id) {
                 }
             }
         }
-        // Last resort: use command connection
         if (!sent && g_ws && g_ws->is_connected()) {
             g_ws->send_binary(msg);
         }
 
-        if (g_recording) recording_write_frame(fr.jpeg_data);
+        // Adaptive quality (JPEG only — H.264 uses bitrate control)
+        auto t1 = std::chrono::steady_clock::now();
+        int64_t elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+        if (!use_h264)
+            update_adaptive_quality(elapsed_ms, frame_bytes);
+
+        // FPS counter (log every 5 seconds)
+        ++g_sent_frames;
+        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            t1.time_since_epoch()).count();
+        int64_t last_log = g_fps_log_time.load();
+        if (last_log == 0) g_fps_log_time.compare_exchange_strong(last_log, now_ms);
+        if (now_ms - last_log >= 5000) {
+            if (g_fps_log_time.compare_exchange_strong(last_log, now_ms)) {
+                int frames = g_sent_frames.exchange(0);
+                float fps = frames * 1000.0f / (float)(now_ms - last_log);
+                std::string info = "Stream: " + std::to_string(fps).substr(0,4) + " FPS, " +
+                    std::to_string(frame_bytes/1024) + "KB, enc=" + std::to_string(elapsed_ms) + "ms";
+                if (use_h264) info += " [H264]";
+                else info += " q=" + std::to_string(g_adaptive_quality.load());
+                g_log.info(info);
+            }
+        }
+    }
+
+    // Cleanup H.264 encoder
+    if (use_h264 && worker_id == 0) {
+        std::lock_guard<std::mutex> lk(g_h264_mtx);
+        g_h264_encoder.reset();
     }
     g_log.info("Encode worker " + std::to_string(worker_id) + " stopped");
 }
@@ -259,9 +358,11 @@ static void stream_encode_func(int worker_id) {
 static void start_streaming() {
     if (g_streaming) return;
 
-    g_adaptive_quality = g_quality;
+    g_adaptive_quality = std::min(g_quality, 50);  // Start conservative for fast ramp
     g_latest_raw.reset();
     g_frame_seq = 0;
+    g_sent_frames = 0;
+    g_fps_log_time = 0;
 
     // Open dedicated stream connections (parallel to command connection)
     int n_conns = std::max(1, std::min(4, g_config.screen_connections));
@@ -285,16 +386,19 @@ static void start_streaming() {
     // Start capture thread
     g_capture_thread = std::thread(stream_capture_func);
 
-    // Start encode workers (one per connection, minimum 1)
-    int n_workers = std::max(1, (int)g_stream_ws.size());
+    // Start encode workers (minimum 2 for overlapping encode)
+    int n_workers = std::max(2, (int)g_stream_ws.size());
     g_encode_threads.clear();
     for (int i = 0; i < n_workers; i++) {
         g_encode_threads.emplace_back(stream_encode_func, i);
     }
 
     g_log.info("Streaming started: " + std::to_string(n_conns) + " connections, " +
-               std::to_string(n_workers) + " encode workers, adaptive quality from " +
-               std::to_string(g_quality));
+               std::to_string(n_workers) + " encode workers, quality=" +
+               std::to_string(g_adaptive_quality.load()) + "/" + std::to_string(g_quality) +
+               ", scale=" + std::to_string(g_scale) + "%");
+    if (g_scale >= 90)
+        g_log.warn("Scale " + std::to_string(g_scale) + "% is high — reduce to 50-70 for better FPS");
 }
 
 // Stop streaming pipeline
@@ -317,6 +421,11 @@ static void stop_streaming() {
         if (ws) ws->disconnect();
     }
     g_stream_ws.clear();
+
+    {
+        std::lock_guard<std::mutex> lk(g_h264_mtx);
+        g_h264_encoder.reset();
+    }
 
     g_log.info("Streaming stopped");
 }
