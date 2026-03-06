@@ -5,7 +5,7 @@
     "password": "secret-password",
     "quality": 80,
     "fps": 30,
-    "scale": 100,
-    "codec": "jpeg",
+    "scale": 60,
+    "codec": "h264",
     "log_level": "INFO"
 }

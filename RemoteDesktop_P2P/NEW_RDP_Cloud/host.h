@@ -10,6 +10,8 @@
 #include <shlwapi.h>
 #include <shellapi.h>
 #include <wincrypt.h>
+#include <pdh.h>
+#include <pdhmsg.h>
 #include <gdiplus.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
