@@ -14,6 +14,7 @@ import time
 import ssl
 import os
 import base64
+import socket
 from typing import Dict, Optional, Set
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -231,8 +232,8 @@ PORT = int(os.environ.get("RDP_PORT", "8080"))
 ADMIN_TOKEN = os.environ.get("RDP_ADMIN_TOKEN", "change-me-admin-token")
 MAX_ROOMS = int(os.environ.get("RDP_MAX_ROOMS", "100"))
 MAX_CLIENTS_PER_ROOM = int(os.environ.get("RDP_MAX_CLIENTS", "10"))
-PING_INTERVAL = 20
-PING_TIMEOUT = 60
+PING_INTERVAL = 5    # Keep NIC active — short pings prevent adapter power-save
+PING_TIMEOUT = 120
 SSL_CERT = os.environ.get("RDP_SSL_CERT", "")
 SSL_KEY  = os.environ.get("RDP_SSL_KEY", "")
 
@@ -255,7 +256,8 @@ class Room:
     password_hash: str
     host: Optional[Connection] = None
     clients: Dict[str, Connection] = field(default_factory=dict)
-    stream_clients: Dict[str, Connection] = field(default_factory=dict)  # SCRN-only connections
+    stream_clients: Dict[str, Connection] = field(default_factory=dict)  # SCRN-only connections (client→receive)
+    host_streams: Dict[str, Connection] = field(default_factory=dict)  # Host stream senders (host→send SCRN)
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     frame_count: int = 0
@@ -326,10 +328,20 @@ async def cleanup_empty_rooms():
 async def handler(websocket, path: str):
     remote = websocket.remote_address
     log.info(f"New connection from {remote} path={path}")
-    
+
+    # ── TCP buffer optimization: large buffers + no-delay for throughput ──
+    try:
+        sock = websocket.transport.get_extra_info("socket")
+        if sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2 * 1024 * 1024)  # 2MB send
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2 * 1024 * 1024)  # 2MB recv
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)              # No Nagle
+    except Exception:
+        pass
+
     conn: Optional[Connection] = None
     room: Optional[Room] = None
-    
+
     try:
         # ── Auth phase ─────────────────────────────────────────────────────
         try:
@@ -356,7 +368,7 @@ async def handler(websocket, path: str):
             await websocket.send(make_error("Missing token"))
             return
         
-        if role not in ("host", "client", "stream"):
+        if role not in ("host", "client", "stream", "host_stream"):
             await websocket.send(make_error("Invalid role"))
             return
         
@@ -374,6 +386,13 @@ async def handler(websocket, path: str):
                 return
             if role == "client" and room.is_full():
                 await websocket.send(make_error("Room full"))
+                return
+
+        # host_stream uses same password as host (already set when host connected)
+        if role == "host_stream":
+            if not check_password(password, room.password_hash):
+                await websocket.send(make_error("Wrong password"))
+                log.warning(f"Auth failed from {remote} (host_stream wrong password)")
                 return
         
         # Register connection
@@ -396,6 +415,8 @@ async def handler(websocket, path: str):
                         await old_host.ws.close()
                     except:
                         pass
+            elif role == "host_stream":
+                room.host_streams[user_id] = conn
             elif role == "stream":
                 room.stream_clients[user_id] = conn
             else:
@@ -436,11 +457,15 @@ async def handler(websocket, path: str):
                         room.host.bytes_sent += len(raw_msg)
                     except:
                         log.warning(f"Failed to forward binary to host")
+                elif role == "host_stream":
+                    # host_stream ONLY sends SCRN/SCR2 frames → route to stream clients
+                    if len(raw_msg) >= 4 and raw_msg[:4] in (b'SCRN', b'SCR2'):
+                        enqueue_scrn_to_stream_clients(room, raw_msg)
                 elif role == "host":
-                    if len(raw_msg) >= 4 and raw_msg[:4] == b'SCRN':
+                    if len(raw_msg) >= 4 and raw_msg[:4] in (b'SCRN', b'SCR2'):
                         # SCRN frames → ONLY to stream_clients, NOT to command clients
-                        room.frame_count += 1
-                        await broadcast_scrn_to_stream_clients(room, raw_msg)
+                        # Fire-and-forget: never blocks the host handler
+                        enqueue_scrn_to_stream_clients(room, raw_msg)
                     else:
                         # FILE chunks → route to specific client if we have a pending target
                         target = room._pending_binary_target
@@ -458,8 +483,8 @@ async def handler(websocket, path: str):
             else:
                 # Text JSON: route by role
                 conn.bytes_recv += len(raw_msg.encode())
-                if role == "stream":
-                    continue  # stream connections are receive-only
+                if role in ("stream", "host_stream"):
+                    continue  # stream/host_stream: binary-only, ignore text
                 try:
                     msg = json.loads(raw_msg)
                 except:
@@ -506,6 +531,8 @@ async def handler(websocket, path: str):
                 if conn.role == "host" and room.host is conn:
                     room.host = None
                     log.info(f"Host disconnected: token={token[:8]}...")
+                elif conn.role == "host_stream":
+                    room.host_streams.pop(conn.user_id, None)
                 elif conn.role == "client":
                     room.clients.pop(conn.user_id, None)
                 elif conn.role == "stream":
@@ -533,17 +560,46 @@ async def broadcast_to_clients(room: Room, msg):
     for uid in dead:
         room.clients.pop(uid, None)
 
-async def broadcast_scrn_to_stream_clients(room: Room, frame: bytes):
-    """Send SCRN binary frames only to stream-dedicated connections."""
-    dead = []
+def enqueue_scrn_to_stream_clients(room: Room, frame: bytes):
+    """Fire-and-forget SCRN frame to all stream clients.
+    Each client has a single-slot latest frame — old frames are dropped automatically.
+    This NEVER blocks the host handler, preventing backpressure."""
+    if not room.stream_clients:
+        return
+    room.frame_count += 1
     for uid, c in list(room.stream_clients.items()):
-        try:
-            await c.ws.send(frame)
-            c.bytes_sent += len(frame)
-        except:
-            dead.append(uid)
-    for uid in dead:
-        room.stream_clients.pop(uid, None)
+        # Store latest frame for this client; sender task picks it up
+        c._latest_frame = frame
+        c.bytes_sent += len(frame)
+        # Start sender task if not already running
+        if not getattr(c, '_sender_task', None) or c._sender_task.done():
+            c._sender_task = asyncio.create_task(_stream_sender(room, uid, c))
+
+
+async def _stream_sender(room: Room, uid: str, conn: Connection):
+    """Per-client sender coroutine: sends the latest SCRN frame, drops stale ones."""
+    try:
+        while uid in room.stream_clients:
+            frame = getattr(conn, '_latest_frame', None)
+            if frame is None:
+                await asyncio.sleep(0.01)
+                continue
+            conn._latest_frame = None  # Consume — if a newer frame arrives, it overwrites
+            try:
+                await conn.ws.send(frame)
+            except Exception:
+                break
+    except Exception:
+        pass
+    finally:
+        # Clean up dead client
+        if uid in room.stream_clients:
+            room.stream_clients.pop(uid, None)
+            log.info(f"Stream client {uid} removed (send failed)")
+            try:
+                await conn.ws.close()
+            except Exception:
+                pass
 
 # ─── Stats endpoint ──────────────────────────────────────────────────────────
 async def stats_handler(websocket, path: str):
@@ -643,6 +699,7 @@ async def main():
         ping_interval=PING_INTERVAL,
         ping_timeout=PING_TIMEOUT,
         max_size=50 * 1024 * 1024,
+        write_limit=2 * 1024 * 1024,  # 2MB write buffer for large file chunks and SCRN frames
         compression=None,
         process_request=_fix_connection_header,
     )
@@ -652,8 +709,13 @@ async def main():
         serve_kw.pop("process_request", None)
         server = await websockets.serve(router, HOST, PORT, **serve_kw)
         log.warning("websockets.serve does not support process_request; proxy Connection fix disabled")
-    
-    log.info(f"Server running. ws{'s' if ssl_ctx else ''}://{HOST}:{PORT}")
+
+    log.info(
+        f"Server running. ws{'s' if ssl_ctx else ''}://{HOST}:{PORT}  "
+        f"ping_interval={PING_INTERVAL}s ping_timeout={PING_TIMEOUT}s "
+        f"max_size={serve_kw.get('max_size',0)//1024//1024}MB "
+        f"write_limit={serve_kw.get('write_limit',0)//1024}KB"
+    )
     await server.wait_closed()
 
 if __name__ == "__main__":

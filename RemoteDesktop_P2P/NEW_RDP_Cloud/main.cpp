@@ -1,28 +1,24 @@
 /*
  * RemoteDesktop Host - Main Entry Point
- * Connects to VPS relay server and handles all remote commands
+ * Multi-threaded streaming pipeline: capture → encode workers → multi-connection send
  */
 
 #include "host.h"
 #include "logger.h"
 #include "ws_client.h"
 #include "screen_capture.h"
+#include "h264_encoder.h"
 #include "file_manager.h"
 #include "process_manager.h"
 #ifdef USE_WEBRTC_STREAM
 #include "webrtc_stream.h"
 #endif
-#include <nlohmann/json.hpp>
-#include <pdh.h>
-#include <pdhmsg.h>
-
-using json = nlohmann::json;
 
 // ===== Global State =====
 static HostConfig g_config;
 static Logger& g_log = Logger::get();
 static std::atomic<bool> g_running{true};
-static std::unique_ptr<WsClient> g_ws;
+static std::unique_ptr<WsClient> g_ws;   // Command connection
 static ScreenCapture g_screen;
 static FileManager g_files;
 static ProcessManager g_procs;
@@ -30,12 +26,27 @@ static ServiceManager g_services;
 
 // Stream state
 static std::atomic<bool> g_streaming{false};
-static std::thread g_stream_thread;
-static std::mutex g_stream_mtx;
 static std::string g_codec = "jpeg";
 static int g_quality = 75;
 static int g_fps = 30;
 static int g_scale = 80;
+
+// ── Multi-threaded stream pipeline ──
+static std::vector<std::unique_ptr<WsClient>> g_stream_ws;   // Stream connections
+static std::thread g_capture_thread;
+static std::vector<std::thread> g_encode_threads;
+static std::mutex g_raw_mtx;
+static std::condition_variable g_raw_cv;
+static std::shared_ptr<ScreenCapture::RawFrame> g_latest_raw;
+static std::atomic<uint64_t> g_frame_seq{0};
+
+// H.264 encoder (one per encode worker — initialized lazily)
+static std::mutex g_h264_mtx;
+static std::unique_ptr<H264Encoder> g_h264_encoder;
+static std::atomic<bool> g_h264_keyframe_requested{false};
+
+// Adaptive quality
+static std::atomic<int> g_adaptive_quality{75};
 
 // Recording state
 static std::atomic<bool> g_recording{false};
@@ -52,37 +63,37 @@ static void load_config(const std::string& path) {
         return;
     }
     std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-    
+
     auto get = [&](const std::string& k, const std::string& def) {
         std::string v = json_get(content, k);
         return v.empty() ? def : v;
     };
-    
+
     g_config.server_address = get("server", g_config.server_address);
     g_config.room_token     = get("token", g_config.room_token);
     g_config.password       = get("password", g_config.password);
-    
+
     std::string port = get("port", "");
     if (!port.empty()) g_config.server_port = std::stoi(port);
-    
+
     std::string q = get("quality", "");
     if (!q.empty()) g_config.quality = std::stoi(q);
-    
+
     std::string fps = get("fps", "");
     if (!fps.empty()) g_config.fps = std::stoi(fps);
-    
+
     std::string sc = get("scale", "");
     if (!sc.empty()) g_config.scale = std::stoi(sc);
-    
+
+    std::string sc_conn = get("screen_connections", "");
+    if (!sc_conn.empty()) g_config.screen_connections = std::stoi(sc_conn);
+
     g_config.codec = get("codec", g_config.codec);
     g_log.info("Config loaded from " + path);
 }
 
 // ===== Recording helpers =====
 static void recording_write_header() {
-    // Custom simple video format: RDV (Remote Desktop Video)
-    // Header: magic(4) + fps(4) + width(4) + height(4)
-    // Each frame: size(4) + timestamp_ms(8) + jpeg_data
     const char magic[4] = {'R','D','V','1'};
     g_rec_file.write(magic, 4);
     int32_t fps = g_fps;
@@ -92,70 +103,331 @@ static void recording_write_header() {
 static void recording_write_frame(const std::vector<uint8_t>& frame_data) {
     if (!g_recording || !g_rec_file.is_open()) return;
     std::lock_guard<std::mutex> lk(g_rec_mtx);
-    
     uint32_t sz = static_cast<uint32_t>(frame_data.size());
     auto now = std::chrono::steady_clock::now();
     uint64_t ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_rec_start).count();
-    
     g_rec_file.write(reinterpret_cast<char*>(&sz), 4);
     g_rec_file.write(reinterpret_cast<const char*>(&ts_ms), 8);
     g_rec_file.write(reinterpret_cast<const char*>(frame_data.data()), sz);
     ++g_rec_frame_count;
 }
 
-// ===== Screen streaming thread =====
-// Sends frames via queue (non-blocking). Sender thread does actual I/O so this loop never blocks on send.
-static void stream_loop() {
-    g_log.info("Stream thread started");
+// ===== Adaptive quality (time-based, every frame) =====
+static std::atomic<int> g_sent_frames{0};
+static std::atomic<int64_t> g_fps_log_time{0};
+
+static void update_adaptive_quality(int64_t encode_send_ms, size_t frame_bytes) {
+    int current = g_adaptive_quality.load();
+    int max_q = g_quality;
+    int target_ms = 1000 / std::max(5, g_fps);  // e.g. 33ms for 30fps
+
+    if (encode_send_ms > target_ms * 3) {
+        // Extremely slow: emergency drop
+        g_adaptive_quality = std::max(10, current - 20);
+    } else if (encode_send_ms > target_ms * 2) {
+        // Very slow: aggressive drop
+        g_adaptive_quality = std::max(10, current - 10);
+    } else if (encode_send_ms > target_ms) {
+        // Too slow: moderate drop
+        g_adaptive_quality = std::max(10, current - 5);
+    } else if (encode_send_ms > target_ms * 3 / 4) {
+        // Slightly slow: gentle drop
+        g_adaptive_quality = std::max(10, current - 2);
+    } else if (encode_send_ms < target_ms / 2 && frame_bytes < 60000 && current < max_q) {
+        // Fast + small frames: can increase quality slowly
+        g_adaptive_quality = std::min(max_q, current + 1);
+    }
+}
+
+// ===== Multi-threaded stream pipeline =====
+
+// Build SCR2 binary message (new protocol, supports JPEG + H.264)
+// Format: SCR2(4) + codec(1) + flags(1) + width(4) + height(4) + data
+// codec: 0=JPEG, 1=H264   flags: bit0=keyframe
+static std::vector<uint8_t> build_scrn_msg(int width, int height,
+    const uint8_t* data, size_t data_size, uint8_t codec, bool keyframe)
+{
+    std::vector<uint8_t> msg;
+    msg.reserve(14 + data_size);
+    const char hdr[4] = {'S','C','R','2'};
+    msg.insert(msg.end(), hdr, hdr+4);
+    msg.push_back(codec);
+    msg.push_back(keyframe ? 1 : 0);
+    uint32_t w = width, h = height;
+    msg.insert(msg.end(), reinterpret_cast<uint8_t*>(&w), reinterpret_cast<uint8_t*>(&w)+4);
+    msg.insert(msg.end(), reinterpret_cast<uint8_t*>(&h), reinterpret_cast<uint8_t*>(&h)+4);
+    msg.insert(msg.end(), data, data + data_size);
+    return msg;
+}
+
+// JPEG convenience wrapper
+static std::vector<uint8_t> build_scrn_msg(const ScreenCapture::Frame& fr) {
+    return build_scrn_msg(fr.width, fr.height,
+        fr.jpeg_data.data(), fr.jpeg_data.size(), 0, false);
+}
+
+// Capture thread: captures raw pixels at target FPS
+static void stream_capture_func() {
+    g_log.info("Capture thread started");
     int consecutive_failures = 0;
 
     while (g_streaming && g_running) {
-        // Re-read target FPS each iteration (user can change it at runtime)
         const int target_fps = std::max(5, std::min(60, g_fps));
         const auto frame_dur = std::chrono::milliseconds(1000 / target_fps);
         auto t0 = std::chrono::steady_clock::now();
 
         try {
-            ScreenCapture::Frame fr;
-            if (!g_screen.capture(fr) || fr.jpeg_data.empty()) {
+            auto raw = std::make_shared<ScreenCapture::RawFrame>();
+            if (g_screen.capture_raw(*raw) && !raw->pixels.empty()) {
+                consecutive_failures = 0;
+                {
+                    std::lock_guard<std::mutex> lk(g_raw_mtx);
+                    g_latest_raw = raw;  // Overwrite old frame (latest-wins)
+                    g_frame_seq++;
+                }
+                g_raw_cv.notify_all();
+            } else {
                 consecutive_failures++;
-                // Adaptive backoff: wait longer on consecutive failures
-                // This handles the case when DXGI is being reinitialized
                 int wait_ms = std::min(2 + consecutive_failures * 5, 200);
                 std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
                 continue;
             }
-            consecutive_failures = 0; // Reset on successful capture
-
-            if (!g_streaming || !g_running) break;
-            std::vector<uint8_t> msg;
-            msg.reserve(12 + fr.jpeg_data.size());
-            const char hdr[4] = {'S','C','R','N'};
-            msg.insert(msg.end(), hdr, hdr+4);
-            uint32_t w = fr.width, h = fr.height;
-            msg.insert(msg.end(), reinterpret_cast<uint8_t*>(&w), reinterpret_cast<uint8_t*>(&w)+4);
-            msg.insert(msg.end(), reinterpret_cast<uint8_t*>(&h), reinterpret_cast<uint8_t*>(&h)+4);
-            msg.insert(msg.end(), fr.jpeg_data.begin(), fr.jpeg_data.end());
-#ifdef USE_WEBRTC_STREAM
-            if (!webrtc_stream::send_frame(msg.data(), msg.size()))
-                g_ws->send_binary(msg);
-#else
-            g_ws->send_binary(msg);
-#endif
-            if (g_recording) recording_write_frame(fr.jpeg_data);
         } catch (const std::exception& e) {
-            g_log.error("Stream error: " + std::string(e.what()));
+            g_log.error("Capture error: " + std::string(e.what()));
             consecutive_failures++;
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
         }
+
         auto elapsed = std::chrono::steady_clock::now() - t0;
-        if (elapsed < frame_dur) {
-            auto sleep_time = frame_dur - elapsed;
-            if (sleep_time.count() > 0 && sleep_time < frame_dur)
-                std::this_thread::sleep_for(sleep_time);
+        if (elapsed < frame_dur)
+            std::this_thread::sleep_for(frame_dur - elapsed);
+    }
+    g_log.info("Capture thread stopped");
+}
+
+// Encode worker: takes raw frames, encodes (JPEG or H.264), sends via connection
+static void stream_encode_func(int worker_id) {
+    g_log.info("Encode worker " + std::to_string(worker_id) + " started, codec=" + g_codec);
+    uint64_t last_seq = 0;
+    int n_conns = std::max(1, (int)g_stream_ws.size());
+    bool use_h264 = (g_codec == "h264" || g_codec == "h265");
+
+    // H.264: only worker 0 encodes (MFT is single-threaded)
+    // Other workers skip when using H.264
+    if (use_h264 && worker_id != 0) {
+        g_log.info("Encode worker " + std::to_string(worker_id) + " idle (H.264 uses worker 0 only)");
+        while (g_streaming && g_running)
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        return;
+    }
+
+    // Init H.264 encoder for worker 0
+    if (use_h264 && worker_id == 0) {
+        // Will initialize on first frame when we know dimensions
+    }
+
+    while (g_streaming && g_running) {
+        std::shared_ptr<ScreenCapture::RawFrame> raw;
+        {
+            std::unique_lock<std::mutex> lk(g_raw_mtx);
+            g_raw_cv.wait_for(lk, std::chrono::milliseconds(50), [&] {
+                return (g_latest_raw != nullptr && g_frame_seq > last_seq) || !g_streaming;
+            });
+            if (!g_streaming) break;
+            if (!g_latest_raw || g_frame_seq <= last_seq) continue;
+            raw = std::exchange(g_latest_raw, {});  // Take and clear
+            last_seq = g_frame_seq;
+        }
+        if (!raw) continue;
+
+        auto t0 = std::chrono::steady_clock::now();
+        std::vector<uint8_t> msg;
+        size_t frame_bytes = 0;
+
+        if (use_h264) {
+            // ── H.264 path ──
+            int w = raw->target_width > 0 ? raw->target_width : raw->src_width;
+            int h = raw->target_height > 0 ? raw->target_height : raw->src_height;
+
+            // Lazy init / reinit on resolution change
+            {
+                std::lock_guard<std::mutex> lk(g_h264_mtx);
+                if (!g_h264_encoder || !g_h264_encoder->is_initialized() ||
+                    g_h264_encoder->get_width() != w || g_h264_encoder->get_height() != h)
+                {
+                    g_h264_encoder.reset();
+                    auto enc = std::make_unique<H264Encoder>();
+                    int bitrate = std::max(500, std::min(8000, w * h * g_fps / 12000));
+                    if (enc->init(w, h, g_fps, bitrate)) {
+                        g_h264_encoder = std::move(enc);
+                    } else {
+                        g_log.error("H.264 encoder init failed, falling back to JPEG");
+                        use_h264 = false;
+                    }
+                }
+            }
+
+            if (use_h264 && g_h264_encoder) {
+                bool want_key = g_h264_keyframe_requested.exchange(false);
+                auto encoded = g_h264_encoder->encode(raw->pixels.data(), raw->src_stride, want_key);
+                raw.reset();
+
+                if (!encoded.data.empty() && g_streaming) {
+                    msg = build_scrn_msg(w, h, encoded.data.data(), encoded.data.size(),
+                                         1, encoded.is_keyframe);
+                    frame_bytes = encoded.data.size();
+                }
+            }
+        }
+
+        if (!use_h264) {
+            // ── JPEG path ──
+            ScreenCapture::Frame fr;
+            int quality = g_adaptive_quality.load();
+            g_screen.encode_raw(*raw, fr, quality);
+            raw.reset();
+
+            if (!fr.jpeg_data.empty() && g_streaming) {
+                frame_bytes = fr.jpeg_data.size();
+                msg = build_scrn_msg(fr);
+                if (g_recording) recording_write_frame(fr.jpeg_data);
+            }
+        }
+
+        if (msg.empty() || !g_streaming) continue;
+
+#ifdef USE_WEBRTC_STREAM
+        if (webrtc_stream::send_frame(msg.data(), msg.size())) continue;
+#endif
+
+        // Send via stream connection (round-robin)
+        bool sent = false;
+        int idx = worker_id % n_conns;
+        if (idx < (int)g_stream_ws.size() && g_stream_ws[idx] && g_stream_ws[idx]->is_connected()) {
+            g_stream_ws[idx]->send_binary(msg);
+            sent = true;
+        }
+        if (!sent) {
+            for (int i = 0; i < (int)g_stream_ws.size(); i++) {
+                if (g_stream_ws[i] && g_stream_ws[i]->is_connected()) {
+                    g_stream_ws[i]->send_binary(msg);
+                    sent = true;
+                    break;
+                }
+            }
+        }
+        if (!sent && g_ws && g_ws->is_connected()) {
+            g_ws->send_binary(msg);
+        }
+
+        // Adaptive quality (JPEG only — H.264 uses bitrate control)
+        auto t1 = std::chrono::steady_clock::now();
+        int64_t elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+        if (!use_h264)
+            update_adaptive_quality(elapsed_ms, frame_bytes);
+
+        // FPS counter (log every 5 seconds)
+        ++g_sent_frames;
+        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            t1.time_since_epoch()).count();
+        int64_t last_log = g_fps_log_time.load();
+        if (last_log == 0) g_fps_log_time.compare_exchange_strong(last_log, now_ms);
+        if (now_ms - last_log >= 5000) {
+            if (g_fps_log_time.compare_exchange_strong(last_log, now_ms)) {
+                int frames = g_sent_frames.exchange(0);
+                float fps = frames * 1000.0f / (float)(now_ms - last_log);
+                std::string info = "Stream: " + std::to_string(fps).substr(0,4) + " FPS, " +
+                    std::to_string(frame_bytes/1024) + "KB, enc=" + std::to_string(elapsed_ms) + "ms";
+                if (use_h264) info += " [H264]";
+                else info += " q=" + std::to_string(g_adaptive_quality.load());
+                g_log.info(info);
+            }
         }
     }
-    g_log.info("Stream thread stopped");
+
+    // Cleanup H.264 encoder
+    if (use_h264 && worker_id == 0) {
+        std::lock_guard<std::mutex> lk(g_h264_mtx);
+        g_h264_encoder.reset();
+    }
+    g_log.info("Encode worker " + std::to_string(worker_id) + " stopped");
+}
+
+// Start streaming pipeline
+static void start_streaming() {
+    if (g_streaming) return;
+
+    g_adaptive_quality = std::min(g_quality, 50);  // Start conservative for fast ramp
+    g_latest_raw.reset();
+    g_frame_seq = 0;
+    g_sent_frames = 0;
+    g_fps_log_time = 0;
+
+    // Open dedicated stream connections (parallel to command connection)
+    int n_conns = std::max(1, std::min(4, g_config.screen_connections));
+    g_stream_ws.clear();
+    for (int i = 0; i < n_conns; i++) {
+        auto ws = std::make_unique<WsClient>();
+        if (ws->connect(g_config.server_address, g_config.server_port, "/host")) {
+            std::string auth = "{\"cmd\":\"auth\",\"token\":\"" + json_escape(g_config.room_token) +
+                               "\",\"password\":\"" + json_escape(g_config.password) +
+                               "\",\"role\":\"host_stream\"}";
+            ws->send_text(auth);
+            g_stream_ws.push_back(std::move(ws));
+            g_log.info("Stream connection " + std::to_string(i) + " established");
+        } else {
+            g_log.warn("Stream connection " + std::to_string(i) + " failed");
+        }
+    }
+
+    g_streaming = true;
+
+    // Start capture thread
+    g_capture_thread = std::thread(stream_capture_func);
+
+    // Start encode workers (minimum 2 for overlapping encode)
+    int n_workers = std::max(2, (int)g_stream_ws.size());
+    g_encode_threads.clear();
+    for (int i = 0; i < n_workers; i++) {
+        g_encode_threads.emplace_back(stream_encode_func, i);
+    }
+
+    g_log.info("Streaming started: " + std::to_string(n_conns) + " connections, " +
+               std::to_string(n_workers) + " encode workers, quality=" +
+               std::to_string(g_adaptive_quality.load()) + "/" + std::to_string(g_quality) +
+               ", scale=" + std::to_string(g_scale) + "%");
+    if (g_scale >= 90)
+        g_log.warn("Scale " + std::to_string(g_scale) + "% is high — reduce to 50-70 for better FPS");
+}
+
+// Stop streaming pipeline
+static void stop_streaming() {
+    if (!g_streaming) return;
+    g_streaming = false;
+    g_raw_cv.notify_all();
+
+#ifdef USE_WEBRTC_STREAM
+    webrtc_stream::close();
+#endif
+
+    if (g_capture_thread.joinable()) g_capture_thread.join();
+    for (auto& t : g_encode_threads) {
+        if (t.joinable()) t.join();
+    }
+    g_encode_threads.clear();
+
+    for (auto& ws : g_stream_ws) {
+        if (ws) ws->disconnect();
+    }
+    g_stream_ws.clear();
+
+    {
+        std::lock_guard<std::mutex> lk(g_h264_mtx);
+        g_h264_encoder.reset();
+    }
+
+    g_log.info("Streaming stopped");
 }
 
 // ===== Command handler =====
@@ -164,9 +436,9 @@ static void handle_command(const std::string& msg_str) {
 #ifdef USE_WEBRTC_STREAM
         {
             try {
-                json j = json::parse(msg_str);
-                if (j.contains("webrtc_ice") && !j.contains("cmd")) {
-                    webrtc_stream::add_ice_candidate(j["webrtc_ice"].dump());
+                auto j_temp = json_get(msg_str, "webrtc_ice");
+                if (!j_temp.empty() && json_get(msg_str, "cmd").empty()) {
+                    // ICE candidate
                     return;
                 }
             } catch (...) {}
@@ -174,7 +446,7 @@ static void handle_command(const std::string& msg_str) {
 #endif
         std::string cmd = json_get(msg_str, "cmd");
         std::string id  = json_get(msg_str, "id");
-        
+
         auto send_ok = [&](const std::string& data) {
             std::string resp = "{\"id\":\"" + json_escape(id) + "\",\"ok\":true,\"data\":" + data + "}";
             g_ws->send_text(resp);
@@ -183,66 +455,33 @@ static void handle_command(const std::string& msg_str) {
             std::string resp = "{\"id\":\"" + json_escape(id) + "\",\"ok\":false,\"error\":\"" + json_escape(err) + "\"}";
             g_ws->send_text(resp);
         };
-        
+
         g_log.debug("CMD: " + cmd);
-        
+
         // --- Screen streaming ---
         if (cmd == "stream_start") {
             std::string codec = json_get(msg_str, "codec");
             std::string q_s   = json_get(msg_str, "quality");
             std::string fps_s = json_get(msg_str, "fps");
             std::string sc_s  = json_get(msg_str, "scale");
-            
+
             if (!codec.empty()) g_codec = codec;
             if (!q_s.empty())   g_quality = std::stoi(q_s);
             if (!fps_s.empty()) g_fps     = std::stoi(fps_s);
             if (!sc_s.empty())  g_scale   = std::stoi(sc_s);
-            
+
             g_screen.set_codec(g_codec);
             g_screen.set_quality(g_quality);
             g_screen.set_scale(g_scale);
-            
-#ifdef USE_WEBRTC_STREAM
-            try {
-                json j = json::parse(msg_str);
-                if (j.contains("webrtc_offer") && j["webrtc_offer"].is_object()) {
-                    std::string type = j["webrtc_offer"].value("type", "offer");
-                    std::string sdp = j["webrtc_offer"].value("sdp", "");
-                    if (!sdp.empty()) {
-                        auto send_fn = [](const std::string& s) {
-                            if (g_ws) g_ws->send_text(s);
-                        };
-                        if (webrtc_stream::init_from_offer(type, sdp, send_fn))
-                            g_log.info("WebRTC offer accepted, answer sent");
-                    }
-                }
-            } catch (const std::exception& e) {
-                g_log.warn("WebRTC offer: " + std::string(e.what()));
-            }
-#else
-            try {
-                json j = json::parse(msg_str);
-                if (j.contains("webrtc_offer") && j["webrtc_offer"].is_object())
-                    g_log.info("WebRTC offer received (build with libdatachannel for WebRTC stream)");
-            } catch (...) {}
-#endif
-            
-            if (!g_streaming.exchange(true)) {
-                g_stream_thread = std::thread(stream_loop);
+
+            if (!g_streaming) {
+                start_streaming();
             }
             send_ok("\"started\"");
         }
         else if (cmd == "stream_stop") {
-            g_streaming = false;
-#ifdef USE_WEBRTC_STREAM
-            webrtc_stream::close();
-#endif
+            stop_streaming();
             send_ok("\"stopped\"");
-            std::thread to_join;
-            if (g_stream_thread.joinable()) {
-                to_join = std::move(g_stream_thread);
-                std::thread([t = std::move(to_join)]() mutable { if (t.joinable()) t.join(); }).detach();
-            }
         }
         else if (cmd == "stream_settings") {
             std::string codec = json_get(msg_str, "codec");
@@ -250,32 +489,21 @@ static void handle_command(const std::string& msg_str) {
             std::string fps_s = json_get(msg_str, "fps");
             std::string sc_s  = json_get(msg_str, "scale");
             if (!codec.empty()) { g_codec = codec; g_screen.set_codec(g_codec); }
-            if (!q_s.empty())   { g_quality = std::stoi(q_s); g_screen.set_quality(g_quality); }
+            if (!q_s.empty())   { g_quality = std::stoi(q_s); g_screen.set_quality(g_quality); g_adaptive_quality = g_quality; }
             if (!fps_s.empty()) g_fps = std::stoi(fps_s);
             if (!sc_s.empty())  { g_scale = std::stoi(sc_s); g_screen.set_scale(g_scale); }
             send_ok("\"ok\"");
         }
-        
+
         // --- Recording ---
         else if (cmd == "record_start") {
             if (!g_recording) {
-                std::string recDir;
-                try {
-                    json j = json::parse(msg_str);
-                    if (j.contains("recording_path") && j["recording_path"].is_string()) {
-                        std::string custom = j["recording_path"].get<std::string>();
-                        if (!custom.empty()) recDir = custom;
-                    }
-                } catch (...) {}
-                if (recDir.empty()) recDir = json_get(msg_str, "recording_path");
+                std::string recDir = json_get(msg_str, "recording_path");
                 if (recDir.empty()) {
                     char tmpPath[MAX_PATH];
                     DWORD n = GetTempPathA(MAX_PATH, tmpPath);
-                    if (n > 0 && n < MAX_PATH) {
-                        recDir = tmpPath;
-                    } else {
-                        recDir = ".\\";
-                    }
+                    if (n > 0 && n < MAX_PATH) recDir = tmpPath;
+                    else recDir = ".\\";
                     if (recDir.back() != '\\' && recDir.back() != '/') recDir += "\\";
                     recDir += "RemoteDesktop_Recordings";
                 }
@@ -300,10 +528,8 @@ static void handle_command(const std::string& msg_str) {
                     g_rec_start = std::chrono::steady_clock::now();
                     recording_write_header();
                     g_recording = true;
-                    g_log.info("Recording started: " + fname);
                     send_ok("\"" + json_escape(fname) + "\"");
                 } else {
-                    g_log.error("Recording failed to open: " + fname);
                     send_err("Cannot open recording file: " + fname);
                 }
             } else {
@@ -320,7 +546,7 @@ static void handle_command(const std::string& msg_str) {
                 send_err("Not recording");
             }
         }
-        
+
         // --- File manager ---
         else if (cmd == "file_list") {
             std::string path = json_get(msg_str, "path");
@@ -332,14 +558,13 @@ static void handle_command(const std::string& msg_str) {
             std::string path   = json_get(msg_str, "path");
             std::string off_s  = json_get(msg_str, "offset");
             std::string len_s  = json_get(msg_str, "length");
-            std::string from   = json_get(msg_str, "_from"); // client routing id
+            std::string from   = json_get(msg_str, "_from");
             uint64_t offset = off_s.empty() ? 0 : std::stoull(off_s);
-            uint32_t length = len_s.empty() ? 524288 : std::stoul(len_s); // Default 512KB
-            if (length > 4 * 1024 * 1024) length = 4 * 1024 * 1024; // Max 4MB per chunk
+            uint32_t length = len_s.empty() ? 524288 : std::stoul(len_s);
+            if (length > 4 * 1024 * 1024) length = 4 * 1024 * 1024;
 
             std::vector<uint8_t> chunk = g_files.read_file_chunk(path, offset, length);
 
-            // Send as binary: "FILE" + path_len(2) + path + offset(8) + chunk_data
             std::vector<uint8_t> bin;
             bin.reserve(16 + path.size() + chunk.size());
             const char hdr[4] = {'F','I','L','E'};
@@ -350,8 +575,6 @@ static void handle_command(const std::string& msg_str) {
             bin.insert(bin.end(), reinterpret_cast<const uint8_t*>(&offset), reinterpret_cast<const uint8_t*>(&offset)+8);
             bin.insert(bin.end(), chunk.begin(), chunk.end());
 
-            // If we know who requested it, send a routing hint so the relay
-            // can forward to that specific client instead of broadcasting
             if (!from.empty()) {
                 std::string route = "{\"_route_binary_to\":\"" + json_escape(from) + "\"}";
                 g_ws->send_text(route);
@@ -359,7 +582,6 @@ static void handle_command(const std::string& msg_str) {
             g_ws->send_binary_priority(bin);
         }
         else if (cmd == "file_write_chunk") {
-            // Data comes in subsequent binary message; just ack
             send_ok("\"ready\"");
         }
         else if (cmd == "file_delete") {
@@ -379,14 +601,8 @@ static void handle_command(const std::string& msg_str) {
             ok ? send_ok("\"renamed\"") : send_err("Rename failed");
         }
         else if (cmd == "file_copy") {
-            std::string from, to;
-            try {
-                json j = json::parse(msg_str);
-                if (j.contains("from") && j["from"].is_string()) from = j["from"].get<std::string>();
-                if (j.contains("to") && j["to"].is_string()) to = j["to"].get<std::string>();
-            } catch (...) {}
-            if (from.empty()) from = json_get(msg_str, "from");
-            if (to.empty()) to = json_get(msg_str, "to");
+            std::string from = json_get(msg_str, "from");
+            std::string to   = json_get(msg_str, "to");
             if (from.empty() || to.empty()) { send_err("file_copy requires from and to"); return; }
             std::error_code ec;
             fs::create_directories(fs::path(to).parent_path(), ec);
@@ -402,11 +618,11 @@ static void handle_command(const std::string& msg_str) {
             std::string path = json_get(msg_str, "path");
             std::string text;
             try {
-                auto j = json::parse(msg_str);
-                if (j.contains("text") && j["text"].is_string())
-                    text = j["text"].get<std::string>();
-                else
+                // Try to parse as JSON to handle escaped characters
+                size_t text_pos = msg_str.find("\"text\"");
+                if (text_pos != std::string::npos) {
                     text = json_unescape(json_get(msg_str, "text"));
+                }
             } catch (...) {
                 text = json_unescape(json_get(msg_str, "text"));
             }
@@ -417,7 +633,6 @@ static void handle_command(const std::string& msg_str) {
             std::string path = json_get(msg_str, "path");
             std::error_code ec;
             auto sz = fs::file_size(path, ec);
-            auto ftime = fs::last_write_time(path, ec);
             std::string r = "{\"size\":" + std::to_string(ec ? 0 : sz) + "}";
             send_ok(r);
         }
@@ -441,7 +656,7 @@ static void handle_command(const std::string& msg_str) {
             arr += "]";
             send_ok(arr);
         }
-        
+
         // --- Process manager ---
         else if (cmd == "proc_list") {
             send_ok(g_procs.get_process_list());
@@ -456,7 +671,7 @@ static void handle_command(const std::string& msg_str) {
         else if (cmd == "proc_launch") {
             std::string exe    = json_get(msg_str, "exe");
             std::string args   = json_get(msg_str, "args");
-            std::string elev   = json_get(msg_str, "elevate"); // "normal" | "admin" | "system"
+            std::string elev   = json_get(msg_str, "elevate");
             bool as_admin = (elev == "admin" || elev == "system");
             bool ok = g_procs.launch_process(exe, args, "", as_admin);
             ok ? send_ok("\"launched\"") : send_err("Launch failed: " + exe);
@@ -468,28 +683,26 @@ static void handle_command(const std::string& msg_str) {
             std::string output = g_procs.run_cmd_capture(command);
             send_ok("\"" + json_escape(output) + "\"");
         }
-        
+
         // --- Services ---
         else if (cmd == "svc_list") {
             send_ok(g_services.get_services_list());
         }
         else if (cmd == "svc_control") {
             std::string name   = json_get(msg_str, "name");
-            std::string action = json_get(msg_str, "action"); // start|stop|restart|pause
+            std::string action = json_get(msg_str, "action");
             bool ok = g_services.control_service(name, action);
             ok ? send_ok("\"done\"") : send_err("Service control failed: " + name + " " + action);
         }
-        
+
         // --- System info ---
         else if (cmd == "sys_info") {
-            // RAM
             MEMORYSTATUSEX ms; ms.dwLength = sizeof(ms);
             GlobalMemoryStatusEx(&ms);
             uint64_t total_mb = ms.ullTotalPhys / 1048576;
             uint64_t avail_mb = ms.ullAvailPhys / 1048576;
             uint64_t uptime_s = GetTickCount64() / 1000;
-            
-            // CPU %: sample GetSystemTimes twice
+
             int cpu_pct = -1;
             {
                 FILETIME idle1, kernel1, user1, idle2, kernel2, user2;
@@ -510,8 +723,7 @@ static void handle_command(const std::string& msg_str) {
                     }
                 }
             }
-            
-            // GPU %: PDH "Utilization Percentage" (Windows 10+)
+
             int gpu_pct = -1;
             {
                 HQUERY hQuery = nullptr;
@@ -539,15 +751,15 @@ static void handle_command(const std::string& msg_str) {
                     PdhCloseQuery(hQuery);
                 }
             }
-            
+
             char hostname[256] = {};
             DWORD hlen = sizeof(hostname);
             GetComputerNameA(hostname, &hlen);
-            
+
             char username[256] = {};
             DWORD ulen = sizeof(username);
             GetUserNameA(username, &ulen);
-            
+
             std::string r = "{\"hostname\":\"" + json_escape(hostname) +
                             "\",\"username\":\"" + json_escape(username) +
                             "\",\"ram_total_mb\":" + std::to_string(total_mb) +
@@ -559,13 +771,11 @@ static void handle_command(const std::string& msg_str) {
             r += "}";
             send_ok(r);
         }
-        
-        // --- Ping/pong ---
+
         else if (cmd == "ping") {
             send_ok("\"pong\"");
         }
-        
-        // --- Config file editing ---
+
         else if (cmd == "config_read") {
             std::string path = json_get(msg_str, "path");
             std::string text = g_files.read_text_file(path);
@@ -573,20 +783,11 @@ static void handle_command(const std::string& msg_str) {
         }
         else if (cmd == "config_write") {
             std::string path = json_get(msg_str, "path");
-            std::string text;
-            try {
-                auto j = json::parse(msg_str);
-                if (j.contains("text") && j["text"].is_string())
-                    text = j["text"].get<std::string>();
-                else
-                    text = json_unescape(json_get(msg_str, "text"));
-            } catch (...) {
-                text = json_unescape(json_get(msg_str, "text"));
-            }
+            std::string text = json_unescape(json_get(msg_str, "text"));
             bool ok = g_files.write_text_file(path, text);
             ok ? send_ok("\"saved\"") : send_err("Write failed");
         }
-        
+
         else {
             send_err("Unknown command: " + cmd);
         }
@@ -597,17 +798,10 @@ static void handle_command(const std::string& msg_str) {
 }
 
 // ===== Binary upload handler (file write) =====
-static std::string g_upload_path;
-static uint64_t g_upload_offset = 0;
-static bool g_upload_last = false;
-
 static void handle_binary(const std::vector<uint8_t>& data) {
     if (data.size() < 4) return;
-    
     const char* hdr = reinterpret_cast<const char*>(data.data());
-    
     if (memcmp(hdr, "WCHK", 4) == 0) {
-        // Write chunk: "WCHK" + last(1) + path_len(2) + path + offset(8) + data
         if (data.size() < 15) return;
         bool last = data[4] != 0;
         uint16_t plen = *reinterpret_cast<const uint16_t*>(&data[5]);
@@ -616,25 +810,20 @@ static void handle_binary(const std::vector<uint8_t>& data) {
         uint64_t offset = *reinterpret_cast<const uint64_t*>(&data[7 + plen]);
         const uint8_t* chunk = &data[7 + plen + 8];
         size_t chunk_sz = data.size() - (7 + plen + 8);
-        
         g_files.write_chunk(path, chunk, chunk_sz, offset, last);
     }
 }
 
 // ===== Main =====
 int main(int argc, char** argv) {
-    // Init
     g_log.set_level("INFO");
     g_log.set_file("C:\\RemoteDesktopHost.log");
-    
     g_log.info("=== RemoteDesktop Host starting ===");
-    
-    // Load config
+
     std::string cfg_path = "host_config.json";
     if (argc > 1) cfg_path = argv[1];
     load_config(cfg_path);
-    
-    // Init screen
+
     g_screen.init();
     g_screen.set_quality(g_config.quality);
     g_screen.set_scale(g_config.scale);
@@ -643,55 +832,49 @@ int main(int argc, char** argv) {
     g_quality = g_config.quality;
     g_scale   = g_config.scale;
     g_codec   = g_config.codec;
-    
-    // Winsock
+
     WSADATA wsa;
     WSAStartup(MAKEWORD(2,2), &wsa);
-    
-    // Connection loop
+
     int reconnect_delay = 3;
     while (g_running) {
         g_log.info("Connecting to " + g_config.server_address + ":" + std::to_string(g_config.server_port));
-        
+
         g_ws = std::make_unique<WsClient>();
         g_ws->on_text = handle_command;
         g_ws->on_binary = handle_binary;
         g_ws->on_close = [&]() {
             g_log.warn("Connection closed, will reconnect");
             g_streaming = false;
+            g_raw_cv.notify_all();
         };
 
         if (g_ws->connect(g_config.server_address, g_config.server_port, "/host")) {
             g_log.info("Connected to server");
             reconnect_delay = 3;
-            
-            // Authenticate
+
             std::string auth = "{\"cmd\":\"auth\",\"token\":\"" + json_escape(g_config.room_token) +
                                "\",\"password\":\"" + json_escape(g_config.password) +
                                "\",\"role\":\"host\"}";
             g_ws->send_text(auth);
-            
-            // Block until disconnected
+
             while (g_ws->is_connected() && g_running)
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
         } else {
             g_log.error("Connection failed, retrying in " + std::to_string(reconnect_delay) + "s");
         }
-        
+
         if (!g_running) break;
 
-        g_streaming = false;
-        // Detach stream thread so it doesn't block reconnect loop —
-        // it will exit on its own when g_streaming=false and g_running=false
-        if (g_stream_thread.joinable()) {
-            g_stream_thread.detach();
-        }
+        // Stop streaming pipeline cleanly before reconnecting
+        stop_streaming();
 
         g_log.info("Reconnecting in " + std::to_string(reconnect_delay) + "s...");
         std::this_thread::sleep_for(std::chrono::seconds(reconnect_delay));
         reconnect_delay = std::min(reconnect_delay * 2, 30);
     }
-    
+
+    stop_streaming();
     g_log.info("Host shutting down");
     WSACleanup();
     return 0;
