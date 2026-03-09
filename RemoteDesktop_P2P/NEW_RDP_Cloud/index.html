@@ -2694,8 +2694,23 @@ function getSelectedFileNames() {
   });
   return names;
 }
-// ── Transfer cancel mechanism ──
+// ── Transfer helpers: speed, ETA, progress ──
+function formatSpeed(bytesPerSec) {
+  if (bytesPerSec >= 1048576) return (bytesPerSec / 1048576).toFixed(1) + ' MB/s';
+  if (bytesPerSec >= 1024) return (bytesPerSec / 1024).toFixed(0) + ' KB/s';
+  return bytesPerSec + ' B/s';
+}
+function formatETA(seconds) {
+  if (!isFinite(seconds) || seconds < 0) return '--:--';
+  if (seconds < 60) return seconds.toFixed(0) + 's';
+  if (seconds < 3600) return Math.floor(seconds/60) + 'm ' + (seconds%60).toFixed(0) + 's';
+  return Math.floor(seconds/3600) + 'h ' + Math.floor((seconds%3600)/60) + 'm';
+}
+
+// ── Transfer state ──
 let _transferCancelled = false;
+let _transferBytesTotal = 0;  // Total bytes transferred across all files
+let _transferStartTime = 0;
 function cancelTransfer() {
   _transferCancelled = true;
   notify('Cancelling...', 'warn', 1000);
@@ -2726,6 +2741,8 @@ async function downloadSelected() {
   }
   if (!toDownload.length) { notify('Nothing to download', 'warn'); return; }
   _transferCancelled = false;
+  _transferBytesTotal = 0;
+  _transferStartTime = Date.now();
   showCancelBtn(true);
   notify(`Downloading ${toDownload.length} file(s)...`, 'info');
   let ok = 0, fail = 0;
@@ -2734,7 +2751,11 @@ async function downloadSelected() {
     const { path, saveName } = toDownload[i];
     try {
       const flatName = saveName.replace(/[\/\\]/g, '_');
-      document.getElementById('fm-status').textContent = `Downloading ${i+1}/${toDownload.length}: ${flatName}`;
+      const elapsed = (Date.now() - _transferStartTime) / 1000;
+      const speed = elapsed > 0 ? _transferBytesTotal / elapsed : 0;
+      const eta = (ok > 0 && i > 0) ? formatETA(elapsed / i * (toDownload.length - i)) : '--:--';
+      document.getElementById('fm-status').textContent =
+        `⬇ ${i+1}/${toDownload.length}: ${flatName} | ${formatSpeed(speed)} | ETA: ${eta} | Done: ${formatBytes(_transferBytesTotal)}`;
       await downloadFromHost(path, flatName, true);
       ok++;
     } catch (e) { fail++; notify('Failed: ' + saveName, 'error'); }
@@ -2799,11 +2820,16 @@ async function copySelected() {
   notify(`Copying ${toCopy.length} item(s)...`, 'info');
   let ok = 0, fail = 0;
   const total = toCopy.length;
+  const copyStart = Date.now();
   for (let i = 0; i < total; i++) {
     if (_transferCancelled) { notify('Copy cancelled', 'warn'); break; }
     const { from, to } = toCopy[i];
     const fname = from.split('\\').pop() || from;
-    document.getElementById('fm-status').textContent = `Copying ${i+1}/${total}: ${fname}`;
+    const elapsed = (Date.now() - copyStart) / 1000;
+    const filesPerSec = i > 0 ? i / elapsed : 0;
+    const eta = filesPerSec > 0 ? formatETA((total - i) / filesPerSec) : '--:--';
+    document.getElementById('fm-status').textContent =
+      `📋 ${i+1}/${total}: ${fname} | ${filesPerSec.toFixed(1)} files/s | ETA: ${eta}`;
     if (bar) bar.style.width = ((i+1)/total*100).toFixed(1) + '%';
     try {
       await sendCmd({ cmd: 'file_copy', from, to });
@@ -2887,13 +2913,18 @@ async function downloadFromHost(path, filename, silent) {
     consecutiveErrors = 0;
     chunks.push(new Uint8Array(chunkData));
     offset += chunkData.byteLength;
+    _transferBytesTotal += chunkData.byteLength;
     if (totalSize > 0) {
       const pct = Math.min(100, (offset/totalSize*100));
       bar.style.width = pct.toFixed(1)+'%';
-      if (!silent) {
-        const status = document.getElementById('fm-status');
-        if (status) status.textContent = `Downloading ${filename}: ${formatBytes(offset)} / ${formatBytes(totalSize)} (${pct.toFixed(0)}%)`;
-      }
+      // Always show per-file progress with speed and ETA
+      const elapsed = (Date.now() - _transferStartTime) / 1000;
+      const speed = elapsed > 0 ? _transferBytesTotal / elapsed : 0;
+      const remainBytes = totalSize - offset;
+      const fileEta = speed > 0 ? formatETA(remainBytes / speed) : '--:--';
+      const status = document.getElementById('fm-status');
+      if (status) status.textContent =
+        `⬇ ${filename}: ${formatBytes(offset)}/${formatBytes(totalSize)} (${pct.toFixed(0)}%) | ${formatSpeed(speed)} | ETA: ${fileEta}`;
     }
     if (chunkData.byteLength < CHUNK) break; // Last chunk
   }

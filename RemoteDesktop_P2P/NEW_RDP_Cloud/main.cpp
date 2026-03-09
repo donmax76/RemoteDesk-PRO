@@ -951,59 +951,51 @@ int main(int argc, char** argv) {
         }
     }
 
-    // ── Disable NIC power management (like TeamViewer) ──
-    // Windows puts network adapters into low-power mode when "idle", reducing
-    // link speed and adding latency. TeamViewer's continuous traffic keeps NIC active.
-    // We disable it via registry + powercfg for immediate effect.
+    // ── Disable NIC power management (INSTANT effect via PowerShell) ──
+    // CRITICAL: Registry-only approach does NOT work without adapter restart!
+    // Set-NetAdapterAdvancedProperty applies changes immediately to the driver.
     {
-        // Registry: disable power management for ALL network adapters
-        HKEY classKey = nullptr;
-        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
-            "SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e972-e325-11ce-bfc1-08002be10318}",
-            0, KEY_READ | KEY_WRITE, &classKey) == ERROR_SUCCESS)
-        {
-            int modified = 0;
-            for (DWORD i = 0; i < 100; i++) {
-                char name[16];
-                DWORD nameLen = sizeof(name);
-                if (RegEnumKeyExA(classKey, i, name, &nameLen, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) break;
+        g_log.info("Applying NIC optimizations via PowerShell (instant effect)...");
 
-                HKEY adapterKey = nullptr;
-                if (RegOpenKeyExA(classKey, name, 0, KEY_READ | KEY_WRITE, &adapterKey) == ERROR_SUCCESS) {
-                    char desc[256] = {};
-                    DWORD descLen = sizeof(desc), type = 0;
-                    if (RegQueryValueExA(adapterKey, "DriverDesc", nullptr, &type, (BYTE*)desc, &descLen) == ERROR_SUCCESS) {
-                        // PnPCapabilities=24: disable idle power-off + wake
-                        DWORD pnp = 24;
-                        RegSetValueExA(adapterKey, "PnPCapabilities", 0, REG_DWORD, (BYTE*)&pnp, sizeof(pnp));
-                        // Disable Energy-Efficient Ethernet (EEE reduces link speed)
-                        DWORD zero = 0;
-                        RegSetValueExA(adapterKey, "*EEE", 0, REG_DWORD, (BYTE*)&zero, sizeof(zero));
-                        // Disable interrupt moderation (lower latency)
-                        RegSetValueExA(adapterKey, "*InterruptModeration", 0, REG_DWORD, (BYTE*)&zero, sizeof(zero));
-                        modified++;
-                    }
-                    RegCloseKey(adapterKey);
-                }
-            }
-            RegCloseKey(classKey);
-            if (modified > 0)
-                g_log.info("NIC power-save disabled for " + std::to_string(modified) + " adapters");
-        }
+        // Disable Energy-Efficient Ethernet (drops link speed from 1Gbps to 100Mbps!)
+        system("powershell -NoProfile -Command \"Get-NetAdapter | Set-NetAdapterAdvancedProperty -DisplayName 'Energy Efficient Ethernet' -DisplayValue 'Disabled' -ErrorAction SilentlyContinue\" >nul 2>nul");
+        // Disable Interrupt Moderation (reduces NIC latency)
+        system("powershell -NoProfile -Command \"Get-NetAdapter | Set-NetAdapterAdvancedProperty -DisplayName 'Interrupt Moderation' -DisplayValue 'Disabled' -ErrorAction SilentlyContinue\" >nul 2>nul");
+        // Disable Flow Control (prevents sender throttling)
+        system("powershell -NoProfile -Command \"Get-NetAdapter | Set-NetAdapterAdvancedProperty -DisplayName 'Flow Control' -DisplayValue 'Disabled' -ErrorAction SilentlyContinue\" >nul 2>nul");
+        // Disable Green Ethernet (another power-save feature)
+        system("powershell -NoProfile -Command \"Get-NetAdapter | Set-NetAdapterAdvancedProperty -DisplayName 'Green Ethernet' -DisplayValue 'Disabled' -ErrorAction SilentlyContinue\" >nul 2>nul");
+        // Disable Power Saving Mode on adapters
+        system("powershell -NoProfile -Command \"Get-NetAdapter | Set-NetAdapterAdvancedProperty -DisplayName 'Power Saving Mode' -DisplayValue 'Disabled' -ErrorAction SilentlyContinue\" >nul 2>nul");
+        // Disable adapter power management (allow computer to turn off device)
+        system("powershell -NoProfile -Command \"Get-NetAdapter | Disable-NetAdapterPowerManagement -ErrorAction SilentlyContinue\" >nul 2>nul");
+        g_log.info("NIC EEE/InterruptMod/FlowControl/GreenEthernet/PowerSave ALL disabled");
 
-        // powercfg: disable WiFi adapter power saving in current power plan (immediate effect)
+        // ── TCP stack tuning via netsh (like enterprise/server config) ──
+        system("netsh int tcp set heuristics disabled >nul 2>nul");
+        system("netsh int tcp set global autotuninglevel=normal >nul 2>nul");
+        system("netsh int tcp set global congestionprovider=ctcp >nul 2>nul");
+        system("netsh int tcp set global rss=enabled >nul 2>nul");
+        system("netsh int tcp set global rsc=disabled >nul 2>nul");
+        system("netsh int tcp set global chimney=disabled >nul 2>nul");
+        system("netsh int tcp set global ecncapability=disabled >nul 2>nul");
+        system("netsh int tcp set global timestamps=disabled >nul 2>nul");
+        system("netsh int tcp set global fastopen=enabled >nul 2>nul");
+        system("netsh int tcp set global maxsynretransmissions=2 >nul 2>nul");
+        system("netsh int tcp set global nonsackrttresiliency=disabled >nul 2>nul");
+        g_log.info("TCP stack tuned: ctcp, rss, no-rsc, no-heuristics, fastopen");
+
+        // ── powercfg: disable ALL power-save features ──
+        // WiFi adapter power saving
         system("powercfg /setacvalueindex SCHEME_CURRENT 19cbb8fa-5279-450e-9fac-8a3d5fedd0c1 12bbebe6-58d6-4636-95bb-3217ef867c1a 0 >nul 2>nul");
-        system("powercfg /setactive SCHEME_CURRENT >nul 2>nul");
-        g_log.info("WiFi adapter power-save disabled via powercfg");
-
-        // Disable USB selective suspend (can throttle USB NIC/WiFi adapters)
+        // USB selective suspend
         system("powercfg /setacvalueindex SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 >nul 2>nul");
-        // Disable PCI Express Link State Power Management (throttles PCIe NICs)
+        // PCI Express Link State Power Management
         system("powercfg /setacvalueindex SCHEME_CURRENT 501a4d13-42af-4429-9fd1-a8218c268e20 ee12f906-d277-404b-b6da-e5fa1a576df5 0 >nul 2>nul");
-        // Disable processor idle (minimum processor state = 100%)
+        // Minimum processor state = 100%
         system("powercfg /setacvalueindex SCHEME_CURRENT 54533251-82be-4824-96c1-47b60b740d00 893dee8e-2bef-41e0-89c6-b55d0929964c 100 >nul 2>nul");
         system("powercfg /setactive SCHEME_CURRENT >nul 2>nul");
-        g_log.info("USB suspend + PCIe power + CPU idle all disabled");
+        g_log.info("powercfg: WiFi/USB/PCIe/CPU power-save all disabled");
     }
 
     // ── Switch to High Performance power plan (like TeamViewer) ──
