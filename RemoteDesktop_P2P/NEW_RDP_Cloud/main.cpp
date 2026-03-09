@@ -511,10 +511,17 @@ static void handle_command(const std::string& msg_str) {
             std::string q_s   = json_get(msg_str, "quality");
             std::string fps_s = json_get(msg_str, "fps");
             std::string sc_s  = json_get(msg_str, "scale");
+            bool codec_changed = (!codec.empty() && codec != g_codec);
             if (!codec.empty()) { g_codec = codec; g_screen.set_codec(g_codec); }
             if (!q_s.empty())   { g_quality = std::stoi(q_s); g_screen.set_quality(g_quality); g_adaptive_quality = g_quality; }
             if (!fps_s.empty()) g_fps = std::stoi(fps_s);
             if (!sc_s.empty())  { g_scale = std::stoi(sc_s); g_screen.set_scale(g_scale); }
+            // Restart pipeline on codec change (H.264↔JPEG needs different encoder)
+            if (codec_changed && g_streaming) {
+                g_log.info("Codec changed to " + g_codec + ", restarting stream pipeline");
+                stop_streaming();
+                start_streaming();
+            }
             send_ok("\"ok\"");
         }
 

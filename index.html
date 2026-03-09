@@ -1069,9 +1069,10 @@ body {
         <button title="Scale -" onclick="adjustScale(-10)">−</button>
         <span id="scale-disp" style="font-size:11px;min-width:28px;text-align:center">60%</span>
         <button title="Scale +" onclick="adjustScale(10)">+</button>
-        <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;color:var(--muted);">
-          <input type="checkbox" id="stream-compressed" onchange="toggleCompressed(this.checked)" /> Compressed
-        </label>
+        <select id="codec-select" class="codec-select" onchange="changeCodec(this.value)" title="Codec">
+          <option value="h264">H.264</option>
+          <option value="jpeg">JPEG</option>
+        </select>
         <div class="sep" style="height:16px;"></div>
         <button title="Fit/Fill" onclick="toggleFit()" id="btn-fit">⊡</button>
         <button title="Screenshot" onclick="takeScreenshot()">📷</button>
@@ -1339,7 +1340,7 @@ const state = {
   fps: 25,
   scale: 60,
   compressed: false,
-  codec: 'jpeg',
+  codec: 'h264',
   // File manager
   currentPath: 'C:\\',
   selectedFiles: new Set(),
@@ -2294,7 +2295,13 @@ async function stopStream() {
 }
 
 function sendStreamSettings() {
-  if (state.streaming) sendCmd({ cmd:'stream_settings', quality: state.quality, fps: state.fps, scale: state.scale });
+  if (state.streaming) sendCmd({ cmd:'stream_settings', codec: state.codec, quality: state.quality, fps: state.fps, scale: state.scale });
+}
+function changeCodec(val) {
+  state.codec = val;
+  document.getElementById('d-codec').textContent = 'Codec: ' + val;
+  sendStreamSettings();
+  notify('Codec: ' + val.toUpperCase(), 'info', 1500);
 }
 
 function adjustQuality(delta) {
