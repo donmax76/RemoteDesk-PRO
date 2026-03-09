@@ -5,10 +5,15 @@
 #include <condition_variable>
 #include <random>
 
-// Simple WebSocket client (RFC 6455) over plain TCP
-// Outgoing: queue + dedicated sender thread so stream and command responses
-// don't block each other. Priority queue for text/file chunks; normal queue for frames (max 2, drop oldest).
-// Keepalive: client sends PING every 30s; responds to server PING with PONG.
+// WebSocket client (RFC 6455) over plain TCP
+// Architecture: 4 threads per connection
+//   recv_loop   — reads frames, handles PING/PONG immediately, queues text/binary to cmd_queue
+//   cmd_loop    — processes text/binary from cmd_queue (heavy work like file I/O)
+//   sender_loop — sends queued outgoing messages (priority + normal queues)
+//   keepalive   — sends PING every 15s
+//
+// CRITICAL: recv_loop NEVER blocks on user callbacks — PING/PONG are always handled instantly.
+// This prevents timeout disconnects during heavy file transfers.
 
 class WsClient {
 public:
@@ -22,13 +27,11 @@ public:
 
     ~WsClient() { disconnect(); }
 
-    // Generate a random base64 WebSocket key (16 random bytes)
     static std::string make_ws_key() {
         std::mt19937 rng(std::random_device{}());
         std::uniform_int_distribution<unsigned> dist(0, 255);
         uint8_t raw[16];
         for (auto& b : raw) b = static_cast<uint8_t>(dist(rng));
-        // base64 encode
         static const char* b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         std::string out;
         out.reserve(24);
@@ -37,7 +40,6 @@ public:
             out += b64[(v>>18)&63]; out += b64[(v>>12)&63];
             out += b64[(v>>6)&63];  out += b64[v&63];
         }
-        // last byte (16th)
         uint32_t v = (uint32_t)raw[15] << 16;
         out += b64[(v>>18)&63]; out += b64[(v>>12)&63]; out += "==";
         return out;
@@ -63,11 +65,10 @@ public:
         setsockopt(sock_, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
 
         // Reduce TCP delayed ACK: ACK every packet instead of every 2nd
-        // Windows default is 200ms delay or every 2 packets — halves RTT for file transfers
         #ifndef SIO_TCP_SET_ACK_FREQUENCY
         #define SIO_TCP_SET_ACK_FREQUENCY _WSAIOW(IOC_VENDOR,23)
         #endif
-        int freq = 1;  // ACK every packet
+        int freq = 1;
         DWORD bytes_ret = 0;
         WSAIoctl(sock_, SIO_TCP_SET_ACK_FREQUENCY, &freq, sizeof(freq), NULL, 0, &bytes_ret, NULL, NULL);
 
@@ -106,9 +107,11 @@ public:
 
         connected_ = true;
         sender_running_ = true;
+        cmd_running_ = true;
         last_pong_time_ = std::chrono::steady_clock::now();
-        sender_thread_ = std::thread(&WsClient::sender_loop, this);
-        recv_thread_ = std::thread(&WsClient::recv_loop, this);
+        sender_thread_    = std::thread(&WsClient::sender_loop, this);
+        recv_thread_      = std::thread(&WsClient::recv_loop, this);
+        cmd_thread_       = std::thread(&WsClient::cmd_loop, this);
         keepalive_thread_ = std::thread(&WsClient::keepalive_loop, this);
         return true;
     }
@@ -116,24 +119,23 @@ public:
     void disconnect() {
         connected_ = false;
         sender_running_ = false;
+        cmd_running_ = false;
         q_cv_.notify_all();
-        // Join sender first (it checks connected_/sender_running_)
+        cmd_cv_.notify_all();
         if (sender_thread_.joinable()) sender_thread_.join();
-        // Close socket to unblock recv()
+        if (cmd_thread_.joinable()) cmd_thread_.join();
         if (sock_ != INVALID_SOCKET) {
             SOCKET s = sock_;
             sock_ = INVALID_SOCKET;
             shutdown(s, SD_BOTH);
             closesocket(s);
         }
-        // Now safe to join recv thread (recv() will return 0/-1)
         if (recv_thread_.joinable()) recv_thread_.join();
         if (keepalive_thread_.joinable()) keepalive_thread_.join();
     }
 
     bool is_connected() const { return connected_; }
 
-    // Command responses and file chunks — go to priority queue (sent before frames)
     void send_text(const std::string& text) {
         std::vector<uint8_t> data(text.begin(), text.end());
         enqueue(true, WS_TEXT, std::move(data));
@@ -153,23 +155,40 @@ public:
 
 private:
     static const size_t kMaxNormalQueue = 2;
-    static const int kPingIntervalSec = 30;
+    static const int kPingIntervalSec = 15;  // More frequent pings (was 30)
 
     struct Outgoing {
         WsOpcode opcode;
         std::vector<uint8_t> data;
     };
 
+    // Incoming command from recv_loop → cmd_loop
+    struct Incoming {
+        bool is_text;  // true=text, false=binary
+        std::string text;
+        std::vector<uint8_t> binary;
+    };
+
     SOCKET sock_ = INVALID_SOCKET;
     std::atomic<bool> connected_{false};
     std::atomic<bool> sender_running_{false};
+    std::atomic<bool> cmd_running_{false};
     std::thread recv_thread_;
     std::thread sender_thread_;
+    std::thread cmd_thread_;
     std::thread keepalive_thread_;
+
+    // Outgoing send queues
     std::mutex q_mu_;
     std::condition_variable q_cv_;
     std::queue<Outgoing> priority_q_;
     std::queue<Outgoing> normal_q_;
+
+    // Incoming command queue (recv_loop → cmd_loop)
+    std::mutex cmd_mu_;
+    std::condition_variable cmd_cv_;
+    std::queue<Incoming> cmd_q_;
+
     std::mt19937 mask_rng_{std::random_device{}()};
     std::mutex mask_mu_;
     std::atomic<std::chrono::steady_clock::time_point> last_pong_time_{std::chrono::steady_clock::now()};
@@ -215,13 +234,36 @@ private:
         }
     }
 
-    // Client-side keepalive: send PING every kPingIntervalSec
+    // Command processing thread — handles on_text/on_binary callbacks
+    // This runs heavy work (file I/O, sys_info) without blocking recv_loop
+    void cmd_loop() {
+        while (cmd_running_ && connected_) {
+            Incoming msg;
+            {
+                std::unique_lock<std::mutex> lk(cmd_mu_);
+                cmd_cv_.wait_for(lk, std::chrono::milliseconds(500), [this] {
+                    return !cmd_running_ || !cmd_q_.empty();
+                });
+                if (!cmd_running_) break;
+                if (cmd_q_.empty()) continue;
+                msg = std::move(cmd_q_.front());
+                cmd_q_.pop();
+            }
+            try {
+                if (msg.is_text && on_text)
+                    on_text(msg.text);
+                else if (!msg.is_text && on_binary)
+                    on_binary(msg.binary);
+            } catch (...) {}
+        }
+    }
+
+    // Keepalive: send PING every 15s (was 30s)
     void keepalive_loop() {
         while (connected_) {
             for (int i = 0; i < kPingIntervalSec * 10 && connected_; ++i)
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             if (!connected_) break;
-            // Send a PING frame (empty payload)
             enqueue(true, WS_PING, {});
         }
     }
@@ -238,7 +280,6 @@ private:
         return true;
     }
 
-    // Generate random 4-byte mask per RFC 6455
     void generate_mask(uint8_t mask[4]) {
         std::lock_guard<std::mutex> lk(mask_mu_);
         std::uniform_int_distribution<unsigned> dist(0, 255);
@@ -248,7 +289,7 @@ private:
 
     bool send_frame_to_socket(WsOpcode opcode, const uint8_t* payload, size_t len) {
         std::vector<uint8_t> frame;
-        frame.reserve(14 + len); // max header + payload
+        frame.reserve(14 + len);
         frame.push_back(0x80 | (uint8_t)opcode);
         if (len < 126) {
             frame.push_back(0x80 | (uint8_t)len);
@@ -265,12 +306,12 @@ private:
         frame.insert(frame.end(), mask, mask+4);
         size_t base = frame.size();
         frame.resize(base + len);
-        // Fast XOR: process 4 bytes at a time using 32-bit mask word
+        // Fast XOR: 4 bytes at a time
         uint8_t* dst = frame.data() + base;
         uint32_t mask32;
         memcpy(&mask32, mask, 4);
         size_t i = 0;
-        size_t len4 = len & ~(size_t)3;  // round down to multiple of 4
+        size_t len4 = len & ~(size_t)3;
         for (; i < len4; i += 4) {
             uint32_t src4;
             memcpy(&src4, payload + i, 4);
@@ -294,6 +335,8 @@ private:
         return true;
     }
 
+    // recv_loop: ONLY reads frames + handles PING/PONG + queues commands
+    // NEVER calls user callbacks directly — stays responsive for control frames
     void recv_loop() {
         while (connected_) {
             uint8_t hdr[2];
@@ -315,35 +358,45 @@ private:
             uint8_t mask[4]={};
             if (masked && !recv_exact(mask,4)) break;
 
-            // Reject absurdly large frames (>64MB) to avoid OOM
             if (plen > 64 * 1024 * 1024) break;
 
             std::vector<uint8_t> payload(plen);
             if (plen > 0 && !recv_exact(payload.data(), plen)) break;
             if (masked) for (size_t i=0;i<plen;++i) payload[i]^=mask[i%4];
 
+            // Control frames — handle IMMEDIATELY (never queued)
             if (op == WS_PING) {
-                // Respond with PONG containing the same payload (RFC 6455)
                 enqueue(true, WS_PONG, std::move(payload));
                 continue;
             }
             if (op == WS_PONG) {
-                // Server responded to our keepalive ping
                 last_pong_time_ = std::chrono::steady_clock::now();
                 continue;
             }
             if (op == WS_CLOSE) {
-                // Send CLOSE frame back to complete handshake (RFC 6455)
                 enqueue(true, WS_CLOSE, std::vector<uint8_t>(payload.begin(), payload.end()));
                 connected_ = false;
                 break;
             }
-            if (op == WS_TEXT && on_text)
-                on_text(std::string(payload.begin(), payload.end()));
-            else if (op == WS_BINARY && on_binary)
-                on_binary(payload);
+
+            // Data frames — queue for cmd_loop (never block recv_loop)
+            {
+                std::lock_guard<std::mutex> lk(cmd_mu_);
+                Incoming in;
+                if (op == WS_TEXT) {
+                    in.is_text = true;
+                    in.text = std::string(payload.begin(), payload.end());
+                } else {
+                    in.is_text = false;
+                    in.binary = std::move(payload);
+                }
+                cmd_q_.push(std::move(in));
+            }
+            cmd_cv_.notify_one();
         }
         connected_ = false;
+        cmd_running_ = false;
+        cmd_cv_.notify_all();
         if (on_close) on_close();
     }
 };

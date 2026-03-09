@@ -231,8 +231,8 @@ PORT = int(os.environ.get("RDP_PORT", "8080"))
 ADMIN_TOKEN = os.environ.get("RDP_ADMIN_TOKEN", "change-me-admin-token")
 MAX_ROOMS = int(os.environ.get("RDP_MAX_ROOMS", "100"))
 MAX_CLIENTS_PER_ROOM = int(os.environ.get("RDP_MAX_CLIENTS", "10"))
-PING_INTERVAL = 25
-PING_TIMEOUT = 60
+PING_INTERVAL = 20
+PING_TIMEOUT = 120
 SSL_CERT = os.environ.get("RDP_SSL_CERT", "")
 SSL_KEY  = os.environ.get("RDP_SSL_KEY", "")
 
