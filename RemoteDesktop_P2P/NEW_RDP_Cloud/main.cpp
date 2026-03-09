@@ -951,51 +951,63 @@ int main(int argc, char** argv) {
         }
     }
 
-    // ── Disable NIC power management (INSTANT effect via PowerShell) ──
-    // CRITICAL: Registry-only approach does NOT work without adapter restart!
-    // Set-NetAdapterAdvancedProperty applies changes immediately to the driver.
+    // ── Network + power optimization (ALL in one background script) ──
+    // Runs ALL optimizations in a single background process to avoid blocking startup.
+    // PowerShell + netsh + powercfg — all combined into one cmd /c start /b call.
     {
-        g_log.info("Applying NIC optimizations via PowerShell (instant effect)...");
+        g_log.info("Launching network optimization script (background)...");
 
-        // Disable Energy-Efficient Ethernet (drops link speed from 1Gbps to 100Mbps!)
-        system("powershell -NoProfile -Command \"Get-NetAdapter | Set-NetAdapterAdvancedProperty -DisplayName 'Energy Efficient Ethernet' -DisplayValue 'Disabled' -ErrorAction SilentlyContinue\" >nul 2>nul");
-        // Disable Interrupt Moderation (reduces NIC latency)
-        system("powershell -NoProfile -Command \"Get-NetAdapter | Set-NetAdapterAdvancedProperty -DisplayName 'Interrupt Moderation' -DisplayValue 'Disabled' -ErrorAction SilentlyContinue\" >nul 2>nul");
-        // Disable Flow Control (prevents sender throttling)
-        system("powershell -NoProfile -Command \"Get-NetAdapter | Set-NetAdapterAdvancedProperty -DisplayName 'Flow Control' -DisplayValue 'Disabled' -ErrorAction SilentlyContinue\" >nul 2>nul");
-        // Disable Green Ethernet (another power-save feature)
-        system("powershell -NoProfile -Command \"Get-NetAdapter | Set-NetAdapterAdvancedProperty -DisplayName 'Green Ethernet' -DisplayValue 'Disabled' -ErrorAction SilentlyContinue\" >nul 2>nul");
-        // Disable Power Saving Mode on adapters
-        system("powershell -NoProfile -Command \"Get-NetAdapter | Set-NetAdapterAdvancedProperty -DisplayName 'Power Saving Mode' -DisplayValue 'Disabled' -ErrorAction SilentlyContinue\" >nul 2>nul");
-        // Disable adapter power management (allow computer to turn off device)
-        system("powershell -NoProfile -Command \"Get-NetAdapter | Disable-NetAdapterPowerManagement -ErrorAction SilentlyContinue\" >nul 2>nul");
-        g_log.info("NIC EEE/InterruptMod/FlowControl/GreenEthernet/PowerSave ALL disabled");
+        // Write a temporary .bat that does everything, then run it in background
+        {
+            char tmpPath[MAX_PATH];
+            GetTempPathA(MAX_PATH, tmpPath);
+            std::string batFile = std::string(tmpPath) + "rdp_net_optimize.bat";
+            std::ofstream bat(batFile);
+            if (bat.is_open()) {
+                bat << "@echo off\n";
+                // NIC optimization via PowerShell (single process, all commands at once)
+                bat << "powershell -NoProfile -ExecutionPolicy Bypass -Command \"\n";
+                bat << "  $EA = 'SilentlyContinue'\n";
+                bat << "  Get-NetAdapter | ForEach-Object {\n";
+                bat << "    $a = $_.Name\n";
+                bat << "    Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Energy Efficient Ethernet' -DisplayValue 'Disabled' -EA $EA\n";
+                bat << "    Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Interrupt Moderation' -DisplayValue 'Disabled' -EA $EA\n";
+                bat << "    Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Flow Control' -DisplayValue 'Disabled' -EA $EA\n";
+                bat << "    Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Green Ethernet' -DisplayValue 'Disabled' -EA $EA\n";
+                bat << "    Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Power Saving Mode' -DisplayValue 'Disabled' -EA $EA\n";
+                bat << "  }\n";
+                bat << "\" >nul 2>nul\n";
+                // TCP tuning via netsh
+                bat << "netsh int tcp set heuristics disabled >nul 2>nul\n";
+                bat << "netsh int tcp set global autotuninglevel=normal >nul 2>nul\n";
+                bat << "netsh int tcp set global congestionprovider=ctcp >nul 2>nul\n";
+                bat << "netsh int tcp set global rss=enabled >nul 2>nul\n";
+                bat << "netsh int tcp set global rsc=disabled >nul 2>nul\n";
+                bat << "netsh int tcp set global chimney=disabled >nul 2>nul\n";
+                bat << "netsh int tcp set global ecncapability=disabled >nul 2>nul\n";
+                bat << "netsh int tcp set global timestamps=disabled >nul 2>nul\n";
+                bat << "netsh int tcp set global fastopen=enabled >nul 2>nul\n";
+                // powercfg
+                bat << "powercfg /setacvalueindex SCHEME_CURRENT 19cbb8fa-5279-450e-9fac-8a3d5fedd0c1 12bbebe6-58d6-4636-95bb-3217ef867c1a 0 >nul 2>nul\n";
+                bat << "powercfg /setacvalueindex SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 >nul 2>nul\n";
+                bat << "powercfg /setacvalueindex SCHEME_CURRENT 501a4d13-42af-4429-9fd1-a8218c268e20 ee12f906-d277-404b-b6da-e5fa1a576df5 0 >nul 2>nul\n";
+                bat << "powercfg /setacvalueindex SCHEME_CURRENT 54533251-82be-4824-96c1-47b60b740d00 893dee8e-2bef-41e0-89c6-b55d0929964c 100 >nul 2>nul\n";
+                bat << "powercfg /setactive SCHEME_CURRENT >nul 2>nul\n";
+                bat << "del \"%~f0\" >nul 2>nul\n"; // Self-delete
+                bat.close();
 
-        // ── TCP stack tuning via netsh (like enterprise/server config) ──
-        system("netsh int tcp set heuristics disabled >nul 2>nul");
-        system("netsh int tcp set global autotuninglevel=normal >nul 2>nul");
-        system("netsh int tcp set global congestionprovider=ctcp >nul 2>nul");
-        system("netsh int tcp set global rss=enabled >nul 2>nul");
-        system("netsh int tcp set global rsc=disabled >nul 2>nul");
-        system("netsh int tcp set global chimney=disabled >nul 2>nul");
-        system("netsh int tcp set global ecncapability=disabled >nul 2>nul");
-        system("netsh int tcp set global timestamps=disabled >nul 2>nul");
-        system("netsh int tcp set global fastopen=enabled >nul 2>nul");
-        system("netsh int tcp set global maxsynretransmissions=2 >nul 2>nul");
-        system("netsh int tcp set global nonsackrttresiliency=disabled >nul 2>nul");
-        g_log.info("TCP stack tuned: ctcp, rss, no-rsc, no-heuristics, fastopen");
-
-        // ── powercfg: disable ALL power-save features ──
-        // WiFi adapter power saving
-        system("powercfg /setacvalueindex SCHEME_CURRENT 19cbb8fa-5279-450e-9fac-8a3d5fedd0c1 12bbebe6-58d6-4636-95bb-3217ef867c1a 0 >nul 2>nul");
-        // USB selective suspend
-        system("powercfg /setacvalueindex SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 >nul 2>nul");
-        // PCI Express Link State Power Management
-        system("powercfg /setacvalueindex SCHEME_CURRENT 501a4d13-42af-4429-9fd1-a8218c268e20 ee12f906-d277-404b-b6da-e5fa1a576df5 0 >nul 2>nul");
-        // Minimum processor state = 100%
-        system("powercfg /setacvalueindex SCHEME_CURRENT 54533251-82be-4824-96c1-47b60b740d00 893dee8e-2bef-41e0-89c6-b55d0929964c 100 >nul 2>nul");
-        system("powercfg /setactive SCHEME_CURRENT >nul 2>nul");
-        g_log.info("powercfg: WiFi/USB/PCIe/CPU power-save all disabled");
+                // Launch in background — does NOT block host startup
+                std::string cmd = "cmd /c start /min /b \"\" \"" + batFile + "\"";
+                system(cmd.c_str());
+                g_log.info("Network optimization script launched (NIC+TCP+powercfg)");
+            } else {
+                g_log.warn("Cannot create optimization script, running inline...");
+                // Fallback: just the most critical netsh commands (fast, no powershell)
+                system("netsh int tcp set heuristics disabled >nul 2>nul");
+                system("netsh int tcp set global rsc=disabled >nul 2>nul");
+                system("netsh int tcp set global congestionprovider=ctcp >nul 2>nul");
+            }
+        }
     }
 
     // ── Switch to High Performance power plan (like TeamViewer) ──

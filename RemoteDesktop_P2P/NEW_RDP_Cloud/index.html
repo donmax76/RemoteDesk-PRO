@@ -2645,7 +2645,11 @@ async function newFolder() {
 function downloadFile(name) {
   const path = state.currentPath.replace(/\\+$/, '') + '\\' + name;
   notify(`Downloading: ${name}...`, 'info');
-  downloadFromHost(path, name);
+  _transferStartTime = Date.now();
+  _transferBytesTotal = 0;
+  showCancelBtn(true);
+  _transferCancelled = false;
+  downloadFromHost(path, name).finally(() => showCancelBtn(false));
 }
 
 function normPath(p) {
