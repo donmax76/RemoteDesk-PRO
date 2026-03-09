@@ -502,10 +502,12 @@ static void handle_command(const std::string& msg_str) {
             g_screen.set_quality(g_quality);
             g_screen.set_scale(g_scale);
 
+            // Respond IMMEDIATELY so client doesn't timeout while we create stream connections
+            send_ok("\"started\"");
+
             if (!g_streaming) {
                 start_streaming();
             }
-            send_ok("\"started\"");
         }
         else if (cmd == "stream_stop") {
             stop_streaming();
@@ -901,7 +903,7 @@ int main(int argc, char** argv) {
     WSADATA wsa;
     WSAStartup(MAKEWORD(2,2), &wsa);
 
-    int reconnect_delay = 3;
+    int reconnect_delay = 1;  // Start at 1s for fast reconnect
     while (g_running) {
         g_log.info("Connecting to " + g_config.server_address + ":" + std::to_string(g_config.server_port));
 
@@ -916,7 +918,7 @@ int main(int argc, char** argv) {
 
         if (g_ws->connect(g_config.server_address, g_config.server_port, "/host")) {
             g_log.info("Connected to server");
-            reconnect_delay = 3;
+            reconnect_delay = 1;  // Reset to 1s on successful connect
 
             std::string auth = "{\"cmd\":\"auth\",\"token\":\"" + json_escape(g_config.room_token) +
                                "\",\"password\":\"" + json_escape(g_config.password) +
@@ -936,7 +938,7 @@ int main(int argc, char** argv) {
 
         g_log.info("Reconnecting in " + std::to_string(reconnect_delay) + "s...");
         std::this_thread::sleep_for(std::chrono::seconds(reconnect_delay));
-        reconnect_delay = std::min(reconnect_delay * 2, 30);
+        reconnect_delay = std::min(reconnect_delay * 2, 10);  // Cap at 10s (was 30s)
     }
 
     stop_streaming();

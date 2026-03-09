@@ -2176,11 +2176,9 @@ async function startStream() {
   const proto   = ssl ? 'wss' : 'ws';
   const token   = document.getElementById('in-token').value.trim();
   const pass    = document.getElementById('in-pass') ? document.getElementById('in-pass').value : '';
-  // Derive stream WS URL from current page URL — guarantees same host/port/protocol
-  // that nginx is already handling (avoids HTTP/1.0 issue with direct port 8080)
-  const streamProto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  const streamHost  = window.location.host; // includes port if non-default
-  const streamUrl   = `${streamProto}://${streamHost}/client`;
+  // Connect stream WS same way as main WS — directly to server:port
+  // This avoids issues with nginx not proxying /client path for WebSocket
+  const streamUrl   = `${proto}://${server}:${port}/client`;
   const sws = new WebSocket(streamUrl);
   sws.binaryType = 'arraybuffer';
   state.streamWs = sws;

@@ -83,9 +83,30 @@ public:
         hints.ai_socktype = SOCK_STREAM;
         if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0)
             return false;
-        bool ok = (::connect(sock_, res->ai_addr, (int)res->ai_addrlen) == 0);
+
+        // Non-blocking connect with 5s timeout (prevents hanging on unreachable server)
+        u_long nonblock = 1;
+        ioctlsocket(sock_, FIONBIO, &nonblock);
+        int cr = ::connect(sock_, res->ai_addr, (int)res->ai_addrlen);
         freeaddrinfo(res);
-        if (!ok) return false;
+        if (cr == SOCKET_ERROR) {
+            int err = WSAGetLastError();
+            if (err != WSAEWOULDBLOCK) return false;
+            // Wait for connect with timeout
+            fd_set wfds, efds;
+            FD_ZERO(&wfds); FD_SET(sock_, &wfds);
+            FD_ZERO(&efds); FD_SET(sock_, &efds);
+            timeval tv; tv.tv_sec = 5; tv.tv_usec = 0;
+            int sel = select(0, nullptr, &wfds, &efds, &tv);
+            if (sel <= 0 || FD_ISSET(sock_, &efds)) return false;
+            // Check connect result
+            int so_error = 0; int so_len = sizeof(so_error);
+            getsockopt(sock_, SOL_SOCKET, SO_ERROR, (char*)&so_error, &so_len);
+            if (so_error != 0) return false;
+        }
+        // Back to blocking mode
+        nonblock = 0;
+        ioctlsocket(sock_, FIONBIO, &nonblock);
 
         std::string key = make_ws_key();
         std::string req =
@@ -122,16 +143,20 @@ public:
         connected_ = false;
         sender_running_ = false;
         cmd_running_ = false;
-        q_cv_.notify_all();
-        cmd_cv_.notify_all();
-        if (sender_thread_.joinable()) sender_thread_.join();
-        if (cmd_thread_.joinable()) cmd_thread_.join();
+
+        // Close socket FIRST — unblocks recv() and send() in all threads immediately
+        // Without this, join() hangs if a thread is blocked on I/O (e.g. sending large frame)
         if (sock_ != INVALID_SOCKET) {
             SOCKET s = sock_;
             sock_ = INVALID_SOCKET;
             shutdown(s, SD_BOTH);
             closesocket(s);
         }
+
+        q_cv_.notify_all();
+        cmd_cv_.notify_all();
+        if (sender_thread_.joinable()) sender_thread_.join();
+        if (cmd_thread_.joinable()) cmd_thread_.join();
         if (recv_thread_.joinable()) recv_thread_.join();
         if (keepalive_thread_.joinable()) keepalive_thread_.join();
     }
