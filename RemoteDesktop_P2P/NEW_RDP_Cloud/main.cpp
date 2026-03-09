@@ -193,15 +193,20 @@ static void stream_capture_func() {
 
         try {
             auto raw = std::make_shared<ScreenCapture::RawFrame>();
-            if (g_screen.capture_raw(*raw) && !raw->pixels.empty()) {
+            int result = g_screen.capture_raw_ex(*raw);
+            if (result == 1 && !raw->pixels.empty()) {
+                // Got new frame
                 consecutive_failures = 0;
                 {
                     std::lock_guard<std::mutex> lk(g_raw_mtx);
-                    g_latest_raw = raw;  // Overwrite old frame (latest-wins)
+                    g_latest_raw = raw;
                     g_frame_seq++;
                 }
                 g_raw_cv.notify_all();
+            } else if (result == 0) {
+                // DXGI timeout: screen not changed — not an error, no backoff
             } else {
+                // Actual error
                 consecutive_failures++;
                 int wait_ms = std::min(2 + consecutive_failures * 5, 200);
                 std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));

@@ -89,6 +89,16 @@ public:
         return capture_gdi_raw(raw);
     }
 
+    // Extended: returns 1=got frame, 0=no change (DXGI timeout, not an error), -1=error
+    int capture_raw_ex(RawFrame& raw) {
+        if (!initialized_) return -1;
+        maybe_retry_dxgi();
+        if (!use_gdi_) {
+            return capture_dxgi_raw_ex(raw);
+        }
+        return capture_gdi_raw(raw) ? 1 : -1;
+    }
+
     // Step 2: Encode raw pixels to JPEG (thread-safe, can run on any thread)
     void encode_raw(const RawFrame& raw, Frame& frame, int quality) {
         if (raw.pixels.empty() || raw.src_width <= 0 || raw.src_height <= 0) return;
@@ -182,14 +192,15 @@ private:
 
     // ── Raw capture (for pipeline) ──
 
-    bool capture_dxgi_raw(RawFrame& raw) {
-        if (!duplication_) return false;
+    // Return: 1=got frame, 0=no change (timeout), -1=error
+    int capture_dxgi_raw_ex(RawFrame& raw) {
+        if (!duplication_) return -1;
         DXGI_OUTDUPL_FRAME_INFO fi{};
         ComPtr<IDXGIResource> res;
-        HRESULT hr = duplication_->AcquireNextFrame(50, &fi, &res);
-        if (hr == DXGI_ERROR_WAIT_TIMEOUT) return false;
-        if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_INVALID_CALL) { handle_dxgi_lost(); return false; }
-        if (FAILED(hr)) { use_gdi_ = true; dxgi_retry_interval_s_ = 5; last_dxgi_retry_ = std::chrono::steady_clock::now(); return false; }
+        HRESULT hr = duplication_->AcquireNextFrame(16, &fi, &res);
+        if (hr == DXGI_ERROR_WAIT_TIMEOUT) return 0;  // No new frame (not an error!)
+        if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_INVALID_CALL) { handle_dxgi_lost(); return -1; }
+        if (FAILED(hr)) { use_gdi_ = true; dxgi_retry_interval_s_ = 5; last_dxgi_retry_ = std::chrono::steady_clock::now(); return -1; }
 
         struct FrameGuard { IDXGIOutputDuplication* dup; ~FrameGuard() { if (dup) dup->ReleaseFrame(); } } fg{duplication_.Get()};
 
@@ -266,7 +277,11 @@ private:
         }
 
         d3dContext_->Unmap(staging_.Get(), 0);
-        return true;
+        return 1;  // Got frame
+    }
+
+    bool capture_dxgi_raw(RawFrame& raw) {
+        return capture_dxgi_raw_ex(raw) == 1;
     }
 
     bool capture_gdi_raw(RawFrame& raw) {
