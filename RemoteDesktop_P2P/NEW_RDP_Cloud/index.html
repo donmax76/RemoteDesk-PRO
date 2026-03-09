@@ -1069,6 +1069,10 @@ body {
         <button title="Scale -" onclick="adjustScale(-10)">−</button>
         <span id="scale-disp" style="font-size:11px;min-width:28px;text-align:center">60%</span>
         <button title="Scale +" onclick="adjustScale(10)">+</button>
+        <select id="codec-select" class="codec-select" onchange="changeCodec(this.value)" title="Codec">
+          <option value="jpeg">JPEG</option>
+          <option value="h264">H.264</option>
+        </select>
         <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;color:var(--muted);">
           <input type="checkbox" id="stream-compressed" onchange="toggleCompressed(this.checked)" /> Compressed
         </label>
@@ -1427,6 +1431,7 @@ function switchPanel(name) {
     const f = document.getElementById('fps-disp'); if (f) f.textContent = state.fps;
     const s = document.getElementById('scale-disp'); if (s) s.textContent = state.scale + '%';
     const c = document.getElementById('stream-compressed'); if (c) c.checked = state.compressed;
+    const cs = document.getElementById('codec-select'); if (cs) cs.value = state.codec;
   }
   if (name === 'settings') {
     const w = document.getElementById('settings-secure-warn');
@@ -1772,13 +1777,9 @@ function handleBinary(buf) {
 
   const sig = String.fromCharCode(arr[0], arr[1], arr[2], arr[3]);
 
-  if (sig === 'SCRN') {
+  if (sig === 'SCRN' || sig === 'SCR2') {
     if (!state.streaming) return;
-    if (arr.length < 12) return;
-    const w = new DataView(buf).getUint32(4, true);
-    const h = new DataView(buf).getUint32(8, true);
-    const jpeg = new Uint8Array(buf, 12);
-    renderFrame(jpeg, w, h, buf.byteLength);
+    parseScrnAndRender(buf);
     return;
   }
 
@@ -2022,15 +2023,200 @@ document.getElementById('btn-stream-toggle').onclick = async () => {
   try { await startStream(); } finally { _streamStarting = false; }
 };
 
+// ── H.264 WebCodecs Decoder ───────────────────────────────────────
+// Uses VideoDecoder API which accepts raw Annex B NAL units directly.
+// This is the modern low-latency approach (no fMP4 muxing needed).
+let _h264Decoder = null;
+let _h264Ready = false;
+let _h264FrameTs = 0;
+let _h264PendingInit = false;
+let _h264Sps = null;        // Cached SPS for decoder config
+let _h264DecoderW = 0;
+let _h264DecoderH = 0;
+
+function initH264Decoder() {
+  if (_h264Ready || _h264PendingInit) return;
+  if (!('VideoDecoder' in window)) {
+    addLog('H.264: WebCodecs not supported — falling back to JPEG', 'WARN');
+    state.codec = 'jpeg';
+    const sel = document.getElementById('codec-select');
+    if (sel) sel.value = 'jpeg';
+    return;
+  }
+  _h264PendingInit = true;
+  // Decoder will be configured when first keyframe arrives (SPS/PPS needed)
+  _h264Ready = true;
+  _h264PendingInit = false;
+  addLog('H.264 WebCodecs decoder ready (waiting for keyframe)', 'OK');
+}
+
+function createH264DecoderInstance(w, h, spsData) {
+  if (_h264Decoder) {
+    try { _h264Decoder.close(); } catch(e) {}
+  }
+  _h264Decoder = new VideoDecoder({
+    output: (frame) => {
+      // Draw decoded frame to canvas
+      const vw = frame.displayWidth || frame.codedWidth;
+      const vh = frame.displayHeight || frame.codedHeight;
+      if (_lastCanvasW !== vw || _lastCanvasH !== vh) {
+        canvas.width = vw; canvas.height = vh;
+        _lastCanvasW = vw; _lastCanvasH = vh;
+      }
+      ctx2d.drawImage(frame, 0, 0);
+      frame.close();
+      document.getElementById('no-stream').style.display = 'none';
+      document.getElementById('stream-stats').classList.remove('hidden');
+      document.getElementById('st-res').textContent = `${vw}×${vh}`;
+    },
+    error: (e) => {
+      addLog('H.264 decode error: ' + e.message, 'ERR');
+    }
+  });
+  // Build avcC description from SPS if we have it
+  const config = {
+    codec: 'avc1.42E01E',  // Baseline profile, Level 3.0
+    codedWidth: w,
+    codedHeight: h,
+    optimizeForLatency: true,
+    hardwareAcceleration: 'prefer-hardware',
+  };
+  // Try to extract profile/level from SPS for correct codec string
+  if (spsData && spsData.length >= 4) {
+    const profile = spsData[1];
+    const compat  = spsData[2];
+    const level   = spsData[3];
+    config.codec = 'avc1.' + profile.toString(16).padStart(2,'0')
+                            + compat.toString(16).padStart(2,'0')
+                            + level.toString(16).padStart(2,'0');
+  }
+  try {
+    _h264Decoder.configure(config);
+    _h264DecoderW = w;
+    _h264DecoderH = h;
+    addLog('H.264 decoder configured: ' + config.codec + ' ' + w + 'x' + h, 'OK');
+  } catch(e) {
+    addLog('H.264 configure error: ' + e.message, 'ERR');
+    _h264Ready = false;
+  }
+}
+
+function destroyH264Decoder() {
+  _h264Ready = false;
+  _h264PendingInit = false;
+  _h264Sps = null;
+  _h264DecoderW = 0;
+  _h264DecoderH = 0;
+  _h264FrameTs = 0;
+  if (_h264Decoder) {
+    try { _h264Decoder.close(); } catch(e) {}
+    _h264Decoder = null;
+  }
+}
+
+// Parse Annex B stream to find NAL unit types
+function findNalUnits(data) {
+  const nals = [];
+  let i = 0;
+  while (i < data.length - 3) {
+    // Look for 00 00 01 or 00 00 00 01
+    if (data[i] === 0 && data[i+1] === 0) {
+      let startCodeLen = 0;
+      if (data[i+2] === 1) startCodeLen = 3;
+      else if (data[i+2] === 0 && i+3 < data.length && data[i+3] === 1) startCodeLen = 4;
+      if (startCodeLen > 0) {
+        const nalStart = i + startCodeLen;
+        if (nalStart < data.length) {
+          const nalType = data[nalStart] & 0x1F;
+          nals.push({ offset: i, nalStart, nalType, startCodeLen });
+        }
+        i = nalStart + 1;
+        continue;
+      }
+    }
+    i++;
+  }
+  return nals;
+}
+
+function feedH264Frame(data, w, h, isKeyframe) {
+  if (!_h264Ready) return;
+
+  const nalUnits = findNalUnits(data);
+
+  // Extract SPS (type 7) for decoder configuration
+  for (const nal of nalUnits) {
+    if (nal.nalType === 7) { // SPS
+      // Find end of this NAL unit
+      const idx = nalUnits.indexOf(nal);
+      const end = (idx + 1 < nalUnits.length) ? nalUnits[idx+1].offset : data.length;
+      _h264Sps = data.slice(nal.nalStart, end);
+      break;
+    }
+  }
+
+  // Configure decoder on first keyframe or resolution change
+  if (isKeyframe && (!_h264Decoder || _h264DecoderW !== w || _h264DecoderH !== h)) {
+    createH264DecoderInstance(w, h, _h264Sps);
+  }
+
+  if (!_h264Decoder || _h264Decoder.state !== 'configured') return;
+
+  // Decode: send the entire Annex B data as one EncodedVideoChunk
+  try {
+    const chunk = new EncodedVideoChunk({
+      type: isKeyframe ? 'key' : 'delta',
+      timestamp: _h264FrameTs,
+      data: data,
+    });
+    _h264FrameTs += 1000000 / Math.max(1, state.fps || 25); // microseconds
+    // Drop frames if decoder queue is full
+    if (_h264Decoder.decodeQueueSize < 5) {
+      _h264Decoder.decode(chunk);
+    }
+  } catch(e) {
+    // Ignore decode errors for non-keyframes (might happen after codec switch)
+  }
+}
+
 function parseScrnAndRender(buf) {
   const arr = new Uint8Array(buf);
   if (arr.length < 12) return;
   const sig = String.fromCharCode(arr[0], arr[1], arr[2], arr[3]);
-  if (sig !== 'SCRN') return;
-  const w = new DataView(buf).getUint32(4, true);
-  const h = new DataView(buf).getUint32(8, true);
-  const jpeg = new Uint8Array(buf, 12);
-  renderFrame(jpeg, w, h, buf.byteLength);
+
+  if (sig === 'SCRN') {
+    // Legacy JPEG-only format: SCRN(4) + width(4) + height(4) + jpegData
+    const w = new DataView(buf).getUint32(4, true);
+    const h = new DataView(buf).getUint32(8, true);
+    const jpeg = new Uint8Array(buf, 12);
+    renderFrame(jpeg, w, h, buf.byteLength);
+    return;
+  }
+
+  if (sig === 'SCR2') {
+    // New multi-codec format: SCR2(4) + codec(1) + flags(1) + width(4) + height(4) + data
+    if (arr.length < 14) return;
+    const codec = arr[4];     // 0=JPEG, 1=H264
+    const flags = arr[5];     // bit0 = keyframe
+    const dv = new DataView(buf);
+    const w = dv.getUint32(6, true);
+    const h = dv.getUint32(10, true);
+    const frameData = new Uint8Array(buf, 14);
+
+    state.frameCount++;
+    state.streamBytesThisSecond += buf.byteLength;
+
+    if (codec === 0) {
+      // JPEG in SCR2 envelope
+      renderFrame(frameData, w, h, buf.byteLength);
+    } else if (codec === 1) {
+      // H.264 Annex B NAL unit(s)
+      const isKey = (flags & 1) !== 0;
+      if (!_h264Ready) initH264Decoder();
+      if (_h264Ready) feedH264Frame(frameData, w, h, isKey);
+    }
+    return;
+  }
 }
 
 async function startStream() {
@@ -2053,11 +2239,13 @@ async function startStream() {
   const proto   = ssl ? 'wss' : 'ws';
   const token   = document.getElementById('in-token').value.trim();
   const pass    = document.getElementById('in-pass') ? document.getElementById('in-pass').value : '';
-  // Derive stream WS URL from current page URL — guarantees same host/port/protocol
-  // that nginx is already handling (avoids HTTP/1.0 issue with direct port 8080)
-  const streamProto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  const streamHost  = window.location.host; // includes port if non-default
-  const streamUrl   = `${streamProto}://${streamHost}/client`;
+  // Smart stream WS URL:
+  // HTTPS pages → go through nginx (wss://host/client) for SSL termination
+  // HTTP pages  → connect directly to server:port (ws://server:port/client)
+  const pageIsHttps = window.location.protocol === 'https:';
+  const streamUrl = pageIsHttps
+    ? `wss://${window.location.host}/client`
+    : `${proto}://${server}:${port}/client`;
   const sws = new WebSocket(streamUrl);
   sws.binaryType = 'arraybuffer';
   state.streamWs = sws;
@@ -2069,7 +2257,7 @@ async function startStream() {
     const arr = new Uint8Array(ev.data);
     if (arr.length < 4) return;
     const sig = String.fromCharCode(arr[0],arr[1],arr[2],arr[3]);
-    if (sig === 'SCRN' && !state.streamOverWebRTC && state.streaming) {
+    if ((sig === 'SCRN' || sig === 'SCR2') && !state.streamOverWebRTC && state.streaming) {
       parseScrnAndRender(ev.data);
     }
   };
@@ -2167,11 +2355,12 @@ async function stopStream() {
   document.getElementById('btn-stream-toggle').classList.remove('active');
   document.getElementById('no-stream').style.display = 'flex';
   document.getElementById('stream-stats').classList.add('hidden');
+  destroyH264Decoder();
   try { await sendCmd({ cmd:'stream_stop' }); } catch(e) {}
 }
 
 function sendStreamSettings() {
-  if (state.streaming) sendCmd({ cmd:'stream_settings', quality: state.quality, fps: state.fps, scale: state.scale });
+  if (state.streaming) sendCmd({ cmd:'stream_settings', codec: state.codec, quality: state.quality, fps: state.fps, scale: state.scale });
 }
 
 function adjustQuality(delta) {
@@ -2206,6 +2395,17 @@ function toggleCompressed(on) {
   document.getElementById('stream-compressed').checked = on;
   sendStreamSettings();
   notify(on ? 'Compressed (40%, 50% scale)' : 'Normal', 'info', 1500);
+}
+function changeCodec(codec) {
+  state.codec = codec;
+  document.getElementById('d-codec').textContent = 'Codec: ' + codec;
+  if (codec === 'h264') {
+    initH264Decoder();
+  } else {
+    destroyH264Decoder();
+  }
+  sendStreamSettings();
+  notify('Codec: ' + codec.toUpperCase(), 'info', 1500);
 }
 function toggleFit() { fitMode = !fitMode; canvas.style.objectFit = fitMode ? 'contain' : 'fill'; }
 function takeScreenshot() {
