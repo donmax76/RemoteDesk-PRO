@@ -14,8 +14,16 @@
 // High-resolution timer + multimedia thread scheduling
 #include <mmsystem.h>
 #include <avrt.h>
+#include <powrprof.h>
+#include <dwmapi.h>
 #pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "avrt.lib")
+#pragma comment(lib, "PowrProf.lib")
+#pragma comment(lib, "dwmapi.lib")
+
+// Saved power scheme to restore on exit
+static GUID g_saved_power_scheme = {};
+static bool g_power_scheme_saved = false;
 #ifdef USE_WEBRTC_STREAM
 #include "webrtc_stream.h"
 #endif
@@ -885,7 +893,36 @@ int main(int argc, char** argv) {
         }
     }
 
-    g_log.info("Timer=1ms, priority=HIGH, network throttling=OFF");
+    // ── Switch to High Performance power plan (like TeamViewer) ──
+    // This prevents CPU/GPU frequency scaling, keeps network adapter at full power
+    {
+        GUID* currentScheme = nullptr;
+        if (PowerGetActiveScheme(NULL, &currentScheme) == ERROR_SUCCESS && currentScheme) {
+            g_saved_power_scheme = *currentScheme;
+            g_power_scheme_saved = true;
+            LocalFree(currentScheme);
+        }
+        // High Performance GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+        GUID highPerf = {0x8c5e7fda, 0xe8bf, 0x4a96, {0x9a, 0x85, 0xa6, 0xe2, 0x3a, 0x8c, 0x63, 0x5c}};
+        if (PowerSetActiveScheme(NULL, &highPerf) == ERROR_SUCCESS) {
+            g_log.info("Power plan: HIGH PERFORMANCE (GPU/CPU at full clock)");
+        } else {
+            g_log.warn("Cannot set High Performance power plan");
+        }
+    }
+
+    // ── Prevent display/system idle throttling ──
+    SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
+
+    // ── Enable MMCSS for Desktop Window Manager ──
+    // Makes DWM compose frames at higher priority → more consistent DXGI capture
+    {
+        HRESULT hr = DwmEnableMMCSS(TRUE);
+        if (SUCCEEDED(hr))
+            g_log.info("DWM MMCSS enabled (better DXGI capture)");
+    }
+
+    g_log.info("Timer=1ms, priority=HIGH, network throttling=OFF, power=HIGH_PERF");
 
     std::string cfg_path = "host_config.json";
     if (argc > 1) cfg_path = argv[1];
@@ -943,6 +980,15 @@ int main(int argc, char** argv) {
 
     stop_streaming();
     timeEndPeriod(1);
+
+    // Restore original power plan
+    if (g_power_scheme_saved) {
+        PowerSetActiveScheme(NULL, &g_saved_power_scheme);
+        g_log.info("Power plan restored");
+    }
+    SetThreadExecutionState(ES_CONTINUOUS);  // Reset execution state
+    DwmEnableMMCSS(FALSE);
+
     g_log.info("Host shutting down");
     WSACleanup();
     return 0;

@@ -1105,7 +1105,7 @@ body {
       <div class="fm-breadcrumb" id="fm-breadcrumb"></div>
       <div class="fm-transfer-bar" style="position:relative;">
         <div class="fill" id="fm-progress"></div>
-        <button id="fm-cancel-btn" class="fm-btn danger" style="display:none;position:absolute;right:2px;top:1px;padding:0 8px;height:18px;font-size:10px;line-height:18px;min-width:auto;" onclick="cancelDownload()">✕ Отмена</button>
+        <button id="fm-cancel-btn" class="fm-btn danger" style="display:none;position:absolute;right:4px;top:-28px;padding:4px 14px;height:26px;font-size:13px;line-height:18px;min-width:auto;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,.3);" onclick="cancelDownload()">✕ Отмена</button>
       </div>
       <div class="fm-body">
         <div class="fm-sidebar">
@@ -1618,7 +1618,9 @@ function connectToServer() {
   if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
   state.wantDisconnect = false;
 
-  const proto = ssl ? 'wss' : 'ws';
+  // Auto-detect wss if page loaded via HTTPS (browser blocks mixed content ws:// on https pages)
+  const pageIsHttps = window.location.protocol === 'https:';
+  const proto = (ssl || pageIsHttps) ? 'wss' : 'ws';
   const url = `${proto}://${server}:${port}/client`;
   setConnStatus('connecting');
   if (errEl) errEl.textContent = 'Connecting...';
@@ -2173,12 +2175,15 @@ async function startStream() {
   const defPort = (window.location.port && window.location.port !== '') ? window.location.port : (window.location.protocol === 'https:' ? '443' : '80');
   const port    = portEl || defPort;
   const ssl     = document.getElementById('in-ssl') ? document.getElementById('in-ssl').checked : false;
-  const proto   = ssl ? 'wss' : 'ws';
+  const pageIsHttps = window.location.protocol === 'https:';
+  const proto   = (ssl || pageIsHttps) ? 'wss' : 'ws';
   const token   = document.getElementById('in-token').value.trim();
   const pass    = document.getElementById('in-pass') ? document.getElementById('in-pass').value : '';
-  // Connect stream WS same way as main WS — directly to server:port
-  // This avoids issues with nginx not proxying /client path for WebSocket
-  const streamUrl   = `${proto}://${server}:${port}/client`;
+  // If HTTPS page → connect through nginx (wss needs SSL termination)
+  // If HTTP page → connect directly to server:port
+  const streamUrl = pageIsHttps
+    ? `wss://${window.location.host}/client`
+    : `${proto}://${server}:${port}/client`;
   const sws = new WebSocket(streamUrl);
   sws.binaryType = 'arraybuffer';
   state.streamWs = sws;
@@ -2722,17 +2727,32 @@ async function copySelected() {
     }
   }
   if (!toCopy.length) { notify('Nothing to copy', 'warn'); return; }
+  const cancelBtn = document.getElementById('fm-cancel-btn');
+  const status = document.getElementById('fm-status');
+  _downloadCancelled = false;
+  if (cancelBtn) cancelBtn.style.display = 'inline-block';
   notify(`Copying ${toCopy.length} item(s)...`, 'info');
   let ok = 0, fail = 0;
-  for (const { from, to } of toCopy) {
+  const copyStart = Date.now();
+  for (let i = 0; i < toCopy.length; i++) {
+    if (_downloadCancelled) break;
+    const { from, to } = toCopy[i];
+    const fname = from.split('\\').pop();
+    if (status) status.textContent = `[${i+1}/${toCopy.length}] ${fname}`;
     try {
       await sendCmd({ cmd: 'file_copy', from, to });
       ok++;
-    } catch (e) { fail++; }
+    } catch (e) { if (_downloadCancelled) break; fail++; }
   }
+  if (cancelBtn) cancelBtn.style.display = 'none';
   selectedNames.forEach(function(n) { state.selectedFiles.delete(n); });
   document.querySelectorAll('.fm-cb').forEach(cb => { cb.checked = false; });
-  notify(`Copied ${ok}. Failed: ${fail}`, fail ? 'warn' : 'success');
+  const elapsed = ((Date.now() - copyStart) / 1000).toFixed(1);
+  const msg = _downloadCancelled
+    ? `Copy cancelled: ${ok}/${toCopy.length} copied`
+    : `Copied ${ok}/${toCopy.length} in ${elapsed}s` + (fail ? `, errors: ${fail}` : '');
+  notify(msg, (fail || _downloadCancelled) ? 'warn' : 'success');
+  if (status) status.textContent = msg;
   refreshFiles();
 }
 
