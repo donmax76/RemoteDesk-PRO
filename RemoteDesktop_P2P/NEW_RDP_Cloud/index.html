@@ -1069,6 +1069,10 @@ body {
         <button title="Scale -" onclick="adjustScale(-10)">−</button>
         <span id="scale-disp" style="font-size:11px;min-width:28px;text-align:center">60%</span>
         <button title="Scale +" onclick="adjustScale(10)">+</button>
+        <select id="codec-select" class="codec-select" onchange="changeCodec(this.value)" title="Codec">
+          <option value="jpeg">JPEG</option>
+          <option value="h264" selected>H.264</option>
+        </select>
         <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;color:var(--muted);">
           <input type="checkbox" id="stream-compressed" onchange="toggleCompressed(this.checked)" /> Compressed
         </label>
@@ -1128,7 +1132,10 @@ body {
           </table>
         </div>
       </div>
-      <div id="fm-status" style="padding:4px 12px;font-size:11px;color:var(--muted);background:var(--panel);border-top:1px solid var(--border);">Ready</div>
+      <div style="display:flex;align-items:center;background:var(--panel);border-top:1px solid var(--border);">
+        <div id="fm-status" style="flex:1;padding:4px 12px;font-size:11px;color:var(--muted);">Ready</div>
+        <button id="btn-cancel-transfer" class="fm-btn danger" style="display:none;margin:2px 8px;padding:2px 12px;font-size:12px;font-weight:bold;" onclick="cancelTransfer()">✕ CANCEL</button>
+      </div>
     </div>
 
     <!-- ── PROCESSES ── -->
@@ -1336,7 +1343,7 @@ const state = {
   fps: 25,
   scale: 60,
   compressed: false,
-  codec: 'jpeg',
+  codec: 'h264',
   // File manager
   currentPath: 'C:\\',
   selectedFiles: new Set(),
@@ -1355,7 +1362,7 @@ const state = {
   // Requests
   pendingReqs: {},
   reqIdCounter: 0,
-  pendingFileChunkResolve: null,
+  pendingFileChunkQueue: [],  // queue of {resolve,reject} for pipelined downloads
   // WebRTC: stream over UDP (separate from WebSocket used for files/commands)
   streamWs: null,         // separate WS for SCRN binary frames only
   streamDc: null,
@@ -1427,6 +1434,7 @@ function switchPanel(name) {
     const f = document.getElementById('fps-disp'); if (f) f.textContent = state.fps;
     const s = document.getElementById('scale-disp'); if (s) s.textContent = state.scale + '%';
     const c = document.getElementById('stream-compressed'); if (c) c.checked = state.compressed;
+    const cs = document.getElementById('codec-select'); if (cs) cs.value = state.codec;
   }
   if (name === 'settings') {
     const w = document.getElementById('settings-secure-warn');
@@ -1772,25 +1780,20 @@ function handleBinary(buf) {
 
   const sig = String.fromCharCode(arr[0], arr[1], arr[2], arr[3]);
 
-  if (sig === 'SCRN') {
+  if (sig === 'SCRN' || sig === 'SCR2') {
     if (!state.streaming) return;
-    if (arr.length < 12) return;
-    const w = new DataView(buf).getUint32(4, true);
-    const h = new DataView(buf).getUint32(8, true);
-    const jpeg = new Uint8Array(buf, 12);
-    renderFrame(jpeg, w, h, buf.byteLength);
+    parseScrnAndRender(buf);
     return;
   }
 
   if (sig === 'FILE') {
-    // File chunk response — resolve pending download promise if waiting
+    // File chunk response — resolve oldest pending promise from pipeline queue
     const dv = new DataView(buf);
     const plen = dv.getUint16(4, true);
     const dataStart = 4 + 2 + plen + 8;
     const chunkData = dataStart < buf.byteLength ? buf.slice(dataStart) : new ArrayBuffer(0);
-    if (state.pendingFileChunkResolve) {
-      const { resolve, reject } = state.pendingFileChunkResolve;
-      state.pendingFileChunkResolve = null;
+    if (state.pendingFileChunkQueue.length > 0) {
+      const { resolve } = state.pendingFileChunkQueue.shift();
       resolve(chunkData);
     } else {
       handleFileChunk(buf);
@@ -2022,15 +2025,200 @@ document.getElementById('btn-stream-toggle').onclick = async () => {
   try { await startStream(); } finally { _streamStarting = false; }
 };
 
+// ── H.264 WebCodecs Decoder ───────────────────────────────────────
+// Uses VideoDecoder API which accepts raw Annex B NAL units directly.
+// This is the modern low-latency approach (no fMP4 muxing needed).
+let _h264Decoder = null;
+let _h264Ready = false;
+let _h264FrameTs = 0;
+let _h264PendingInit = false;
+let _h264Sps = null;        // Cached SPS for decoder config
+let _h264DecoderW = 0;
+let _h264DecoderH = 0;
+
+function initH264Decoder() {
+  if (_h264Ready || _h264PendingInit) return;
+  if (!('VideoDecoder' in window)) {
+    addLog('H.264: WebCodecs not supported — falling back to JPEG', 'WARN');
+    state.codec = 'jpeg';
+    const sel = document.getElementById('codec-select');
+    if (sel) sel.value = 'jpeg';
+    return;
+  }
+  _h264PendingInit = true;
+  // Decoder will be configured when first keyframe arrives (SPS/PPS needed)
+  _h264Ready = true;
+  _h264PendingInit = false;
+  addLog('H.264 WebCodecs decoder ready (waiting for keyframe)', 'OK');
+}
+
+function createH264DecoderInstance(w, h, spsData) {
+  if (_h264Decoder) {
+    try { _h264Decoder.close(); } catch(e) {}
+  }
+  _h264Decoder = new VideoDecoder({
+    output: (frame) => {
+      // Draw decoded frame to canvas
+      const vw = frame.displayWidth || frame.codedWidth;
+      const vh = frame.displayHeight || frame.codedHeight;
+      if (_lastCanvasW !== vw || _lastCanvasH !== vh) {
+        canvas.width = vw; canvas.height = vh;
+        _lastCanvasW = vw; _lastCanvasH = vh;
+      }
+      ctx2d.drawImage(frame, 0, 0);
+      frame.close();
+      document.getElementById('no-stream').style.display = 'none';
+      document.getElementById('stream-stats').classList.remove('hidden');
+      document.getElementById('st-res').textContent = `${vw}×${vh}`;
+    },
+    error: (e) => {
+      addLog('H.264 decode error: ' + e.message, 'ERR');
+    }
+  });
+  // Build avcC description from SPS if we have it
+  const config = {
+    codec: 'avc1.42E01E',  // Baseline profile, Level 3.0
+    codedWidth: w,
+    codedHeight: h,
+    optimizeForLatency: true,
+    hardwareAcceleration: 'prefer-hardware',
+  };
+  // Try to extract profile/level from SPS for correct codec string
+  if (spsData && spsData.length >= 4) {
+    const profile = spsData[1];
+    const compat  = spsData[2];
+    const level   = spsData[3];
+    config.codec = 'avc1.' + profile.toString(16).padStart(2,'0')
+                            + compat.toString(16).padStart(2,'0')
+                            + level.toString(16).padStart(2,'0');
+  }
+  try {
+    _h264Decoder.configure(config);
+    _h264DecoderW = w;
+    _h264DecoderH = h;
+    addLog('H.264 decoder configured: ' + config.codec + ' ' + w + 'x' + h, 'OK');
+  } catch(e) {
+    addLog('H.264 configure error: ' + e.message, 'ERR');
+    _h264Ready = false;
+  }
+}
+
+function destroyH264Decoder() {
+  _h264Ready = false;
+  _h264PendingInit = false;
+  _h264Sps = null;
+  _h264DecoderW = 0;
+  _h264DecoderH = 0;
+  _h264FrameTs = 0;
+  if (_h264Decoder) {
+    try { _h264Decoder.close(); } catch(e) {}
+    _h264Decoder = null;
+  }
+}
+
+// Parse Annex B stream to find NAL unit types
+function findNalUnits(data) {
+  const nals = [];
+  let i = 0;
+  while (i < data.length - 3) {
+    // Look for 00 00 01 or 00 00 00 01
+    if (data[i] === 0 && data[i+1] === 0) {
+      let startCodeLen = 0;
+      if (data[i+2] === 1) startCodeLen = 3;
+      else if (data[i+2] === 0 && i+3 < data.length && data[i+3] === 1) startCodeLen = 4;
+      if (startCodeLen > 0) {
+        const nalStart = i + startCodeLen;
+        if (nalStart < data.length) {
+          const nalType = data[nalStart] & 0x1F;
+          nals.push({ offset: i, nalStart, nalType, startCodeLen });
+        }
+        i = nalStart + 1;
+        continue;
+      }
+    }
+    i++;
+  }
+  return nals;
+}
+
+function feedH264Frame(data, w, h, isKeyframe) {
+  if (!_h264Ready) return;
+
+  const nalUnits = findNalUnits(data);
+
+  // Extract SPS (type 7) for decoder configuration
+  for (const nal of nalUnits) {
+    if (nal.nalType === 7) { // SPS
+      // Find end of this NAL unit
+      const idx = nalUnits.indexOf(nal);
+      const end = (idx + 1 < nalUnits.length) ? nalUnits[idx+1].offset : data.length;
+      _h264Sps = data.slice(nal.nalStart, end);
+      break;
+    }
+  }
+
+  // Configure decoder on first keyframe or resolution change
+  if (isKeyframe && (!_h264Decoder || _h264DecoderW !== w || _h264DecoderH !== h)) {
+    createH264DecoderInstance(w, h, _h264Sps);
+  }
+
+  if (!_h264Decoder || _h264Decoder.state !== 'configured') return;
+
+  // Decode: send the entire Annex B data as one EncodedVideoChunk
+  try {
+    const chunk = new EncodedVideoChunk({
+      type: isKeyframe ? 'key' : 'delta',
+      timestamp: _h264FrameTs,
+      data: data,
+    });
+    _h264FrameTs += 1000000 / Math.max(1, state.fps || 25); // microseconds
+    // Drop frames if decoder queue is full
+    if (_h264Decoder.decodeQueueSize < 5) {
+      _h264Decoder.decode(chunk);
+    }
+  } catch(e) {
+    // Ignore decode errors for non-keyframes (might happen after codec switch)
+  }
+}
+
 function parseScrnAndRender(buf) {
   const arr = new Uint8Array(buf);
   if (arr.length < 12) return;
   const sig = String.fromCharCode(arr[0], arr[1], arr[2], arr[3]);
-  if (sig !== 'SCRN') return;
-  const w = new DataView(buf).getUint32(4, true);
-  const h = new DataView(buf).getUint32(8, true);
-  const jpeg = new Uint8Array(buf, 12);
-  renderFrame(jpeg, w, h, buf.byteLength);
+
+  if (sig === 'SCRN') {
+    // Legacy JPEG-only format: SCRN(4) + width(4) + height(4) + jpegData
+    const w = new DataView(buf).getUint32(4, true);
+    const h = new DataView(buf).getUint32(8, true);
+    const jpeg = new Uint8Array(buf, 12);
+    renderFrame(jpeg, w, h, buf.byteLength);
+    return;
+  }
+
+  if (sig === 'SCR2') {
+    // New multi-codec format: SCR2(4) + codec(1) + flags(1) + width(4) + height(4) + data
+    if (arr.length < 14) return;
+    const codec = arr[4];     // 0=JPEG, 1=H264
+    const flags = arr[5];     // bit0 = keyframe
+    const dv = new DataView(buf);
+    const w = dv.getUint32(6, true);
+    const h = dv.getUint32(10, true);
+    const frameData = new Uint8Array(buf, 14);
+
+    state.frameCount++;
+    state.streamBytesThisSecond += buf.byteLength;
+
+    if (codec === 0) {
+      // JPEG in SCR2 envelope
+      renderFrame(frameData, w, h, buf.byteLength);
+    } else if (codec === 1) {
+      // H.264 Annex B NAL unit(s)
+      const isKey = (flags & 1) !== 0;
+      if (!_h264Ready) initH264Decoder();
+      if (_h264Ready) feedH264Frame(frameData, w, h, isKey);
+    }
+    return;
+  }
 }
 
 async function startStream() {
@@ -2053,11 +2241,13 @@ async function startStream() {
   const proto   = ssl ? 'wss' : 'ws';
   const token   = document.getElementById('in-token').value.trim();
   const pass    = document.getElementById('in-pass') ? document.getElementById('in-pass').value : '';
-  // Derive stream WS URL from current page URL — guarantees same host/port/protocol
-  // that nginx is already handling (avoids HTTP/1.0 issue with direct port 8080)
-  const streamProto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  const streamHost  = window.location.host; // includes port if non-default
-  const streamUrl   = `${streamProto}://${streamHost}/client`;
+  // Smart stream WS URL:
+  // HTTPS pages → go through nginx (wss://host/client) for SSL termination
+  // HTTP pages  → connect directly to server:port (ws://server:port/client)
+  const pageIsHttps = window.location.protocol === 'https:';
+  const streamUrl = pageIsHttps
+    ? `wss://${window.location.host}/client`
+    : `${proto}://${server}:${port}/client`;
   const sws = new WebSocket(streamUrl);
   sws.binaryType = 'arraybuffer';
   state.streamWs = sws;
@@ -2069,7 +2259,7 @@ async function startStream() {
     const arr = new Uint8Array(ev.data);
     if (arr.length < 4) return;
     const sig = String.fromCharCode(arr[0],arr[1],arr[2],arr[3]);
-    if (sig === 'SCRN' && !state.streamOverWebRTC && state.streaming) {
+    if ((sig === 'SCRN' || sig === 'SCR2') && !state.streamOverWebRTC && state.streaming) {
       parseScrnAndRender(ev.data);
     }
   };
@@ -2167,11 +2357,12 @@ async function stopStream() {
   document.getElementById('btn-stream-toggle').classList.remove('active');
   document.getElementById('no-stream').style.display = 'flex';
   document.getElementById('stream-stats').classList.add('hidden');
+  destroyH264Decoder();
   try { await sendCmd({ cmd:'stream_stop' }); } catch(e) {}
 }
 
 function sendStreamSettings() {
-  if (state.streaming) sendCmd({ cmd:'stream_settings', quality: state.quality, fps: state.fps, scale: state.scale });
+  if (state.streaming) sendCmd({ cmd:'stream_settings', codec: state.codec, quality: state.quality, fps: state.fps, scale: state.scale });
 }
 
 function adjustQuality(delta) {
@@ -2206,6 +2397,17 @@ function toggleCompressed(on) {
   document.getElementById('stream-compressed').checked = on;
   sendStreamSettings();
   notify(on ? 'Compressed (40%, 50% scale)' : 'Normal', 'info', 1500);
+}
+function changeCodec(codec) {
+  state.codec = codec;
+  document.getElementById('d-codec').textContent = 'Codec: ' + codec;
+  if (codec === 'h264') {
+    initH264Decoder();
+  } else {
+    destroyH264Decoder();
+  }
+  sendStreamSettings();
+  notify('Codec: ' + codec.toUpperCase(), 'info', 1500);
 }
 function toggleFit() { fitMode = !fitMode; canvas.style.objectFit = fitMode ? 'contain' : 'fill'; }
 function takeScreenshot() {
@@ -2442,7 +2644,11 @@ async function newFolder() {
 function downloadFile(name) {
   const path = state.currentPath.replace(/\\+$/, '') + '\\' + name;
   notify(`Downloading: ${name}...`, 'info');
-  downloadFromHost(path, name);
+  _transferStartTime = Date.now();
+  _transferBytesTotal = 0;
+  showCancelBtn(true);
+  _transferCancelled = false;
+  downloadFromHost(path, name).finally(() => showCancelBtn(false));
 }
 
 function normPath(p) {
@@ -2491,6 +2697,32 @@ function getSelectedFileNames() {
   });
   return names;
 }
+// ── Transfer helpers: speed, ETA, progress ──
+function formatSpeed(bytesPerSec) {
+  if (bytesPerSec >= 1048576) return (bytesPerSec / 1048576).toFixed(1) + ' MB/s';
+  if (bytesPerSec >= 1024) return (bytesPerSec / 1024).toFixed(0) + ' KB/s';
+  return bytesPerSec + ' B/s';
+}
+function formatETA(seconds) {
+  if (!isFinite(seconds) || seconds < 0) return '--:--';
+  if (seconds < 60) return seconds.toFixed(0) + 's';
+  if (seconds < 3600) return Math.floor(seconds/60) + 'm ' + (seconds%60).toFixed(0) + 's';
+  return Math.floor(seconds/3600) + 'h ' + Math.floor((seconds%3600)/60) + 'm';
+}
+
+// ── Transfer state ──
+let _transferCancelled = false;
+let _transferBytesTotal = 0;  // Total bytes transferred across all files
+let _transferStartTime = 0;
+function cancelTransfer() {
+  _transferCancelled = true;
+  notify('Cancelling...', 'warn', 1000);
+}
+function showCancelBtn(show) {
+  const btn = document.getElementById('btn-cancel-transfer');
+  if (btn) btn.style.display = show ? 'inline-block' : 'none';
+}
+
 async function downloadSelected() {
   const selectedNames = getSelectedFileNames();
   if (!selectedNames.length) {
@@ -2511,24 +2743,34 @@ async function downloadSelected() {
     }
   }
   if (!toDownload.length) { notify('Nothing to download', 'warn'); return; }
+  _transferCancelled = false;
+  _transferBytesTotal = 0;
+  _transferStartTime = Date.now();
+  showCancelBtn(true);
   notify(`Downloading ${toDownload.length} file(s)...`, 'info');
   let ok = 0, fail = 0;
   for (let i = 0; i < toDownload.length; i++) {
+    if (_transferCancelled) { notify('Download cancelled', 'warn'); break; }
     const { path, saveName } = toDownload[i];
     try {
-      // For folder downloads, flatten the saveName by replacing / with _
-      // (browser downloads can't create subdirectories)
       const flatName = saveName.replace(/[\/\\]/g, '_');
-      document.getElementById('fm-status').textContent = `Downloading ${i+1}/${toDownload.length}: ${flatName}`;
+      const elapsed = (Date.now() - _transferStartTime) / 1000;
+      const speed = elapsed > 0 ? _transferBytesTotal / elapsed : 0;
+      const eta = (ok > 0 && i > 0) ? formatETA(elapsed / i * (toDownload.length - i)) : '--:--';
+      document.getElementById('fm-status').textContent =
+        `⬇ ${i+1}/${toDownload.length}: ${flatName} | ${formatSpeed(speed)} | ETA: ${eta} | Done: ${formatBytes(_transferBytesTotal)}`;
       await downloadFromHost(path, flatName, true);
       ok++;
     } catch (e) { fail++; notify('Failed: ' + saveName, 'error'); }
     if (i < toDownload.length - 1) await new Promise(r => setTimeout(r, 100));
   }
+  showCancelBtn(false);
   selectedNames.forEach(function(n) { state.selectedFiles.delete(n); });
   document.querySelectorAll('.fm-cb').forEach(cb => { cb.checked = false; });
-  const statusMsg = `Downloaded ${ok}/${toDownload.length} file(s)` + (fail ? `, ${fail} failed` : '');
-  notify(statusMsg, fail ? 'warn' : 'success');
+  const statusMsg = _transferCancelled
+    ? `Download cancelled. ${ok}/${toDownload.length} done`
+    : `Downloaded ${ok}/${toDownload.length} file(s)` + (fail ? `, ${fail} failed` : '');
+  notify(statusMsg, fail || _transferCancelled ? 'warn' : 'success');
   document.getElementById('fm-status').textContent = statusMsg;
 }
 
@@ -2562,6 +2804,7 @@ async function copySelected() {
   const destBase = normPath(dest) + (dest.endsWith('\\') ? '' : '\\');
   const base = normPath(state.currentPath) + '\\';
   const toCopy = [];
+  document.getElementById('fm-status').textContent = 'Scanning files...';
   for (const name of selectedNames) {
     const item = state.fileList.find(i => (i.name || '').trim() === (name || '').trim());
     const from = base + name;
@@ -2574,28 +2817,49 @@ async function copySelected() {
     }
   }
   if (!toCopy.length) { notify('Nothing to copy', 'warn'); return; }
+  _transferCancelled = false;
+  showCancelBtn(true);
+  const bar = document.getElementById('fm-progress');
   notify(`Copying ${toCopy.length} item(s)...`, 'info');
   let ok = 0, fail = 0;
-  for (const { from, to } of toCopy) {
+  const total = toCopy.length;
+  const copyStart = Date.now();
+  for (let i = 0; i < total; i++) {
+    if (_transferCancelled) { notify('Copy cancelled', 'warn'); break; }
+    const { from, to } = toCopy[i];
+    const fname = from.split('\\').pop() || from;
+    const elapsed = (Date.now() - copyStart) / 1000;
+    const filesPerSec = i > 0 ? i / elapsed : 0;
+    const eta = filesPerSec > 0 ? formatETA((total - i) / filesPerSec) : '--:--';
+    document.getElementById('fm-status').textContent =
+      `📋 ${i+1}/${total}: ${fname} | ${filesPerSec.toFixed(1)} files/s | ETA: ${eta}`;
+    if (bar) bar.style.width = ((i+1)/total*100).toFixed(1) + '%';
     try {
       await sendCmd({ cmd: 'file_copy', from, to });
       ok++;
     } catch (e) { fail++; }
   }
+  showCancelBtn(false);
+  if (bar) bar.style.width = '0%';
   selectedNames.forEach(function(n) { state.selectedFiles.delete(n); });
   document.querySelectorAll('.fm-cb').forEach(cb => { cb.checked = false; });
-  notify(`Copied ${ok}. Failed: ${fail}`, fail ? 'warn' : 'success');
+  const statusMsg = _transferCancelled
+    ? `Copy cancelled. ${ok}/${total} done`
+    : `Copied ${ok}/${total}` + (fail ? `, ${fail} failed` : '');
+  notify(statusMsg, fail || _transferCancelled ? 'warn' : 'success');
+  document.getElementById('fm-status').textContent = statusMsg;
   refreshFiles();
 }
 
 async function downloadFromHost(path, filename, silent) {
-  const CHUNK = 524288; // 512KB chunks (was 64KB - too small for large files)
-  let offset = 0;
+  const CHUNK = 1048576; // 1MB chunks for max throughput
+  const PIPELINE = 6;    // 6 in-flight requests — hides RTT latency
   const chunks = [];
   let bar = document.getElementById('fm-progress');
   path = normPath(path);
   if (!path) return;
 
+  // Get file size first
   let totalSize = 0;
   try {
     const info = await sendCmd({ cmd:'file_info', path });
@@ -2605,62 +2869,102 @@ async function downloadFromHost(path, filename, silent) {
     }
   } catch {}
 
-  const MAX_RETRIES = 3;
-  let consecutiveErrors = 0;
+  // ── Pipeline state ──
+  let nextSendOffset = 0;    // offset for next request to fire
+  let nextRecvIdx = 0;       // index of next chunk to process
+  let receivedBytes = 0;
+  let finished = false;
+  let pipelineError = null;
 
-  while (true) {
+  // Fire a single chunk request, returns Promise that resolves with chunkData
+  function fireRequest(offset) {
+    return new Promise((resolve, reject) => {
+      const entry = { resolve, reject };
+      const timeoutId = setTimeout(() => {
+        // Remove from queue if still there
+        const idx = state.pendingFileChunkQueue.indexOf(entry);
+        if (idx !== -1) state.pendingFileChunkQueue.splice(idx, 1);
+        reject(new Error('Timeout'));
+      }, 60000);
+      // Wrap resolve to clear timeout
+      const origResolve = entry.resolve;
+      entry.resolve = (data) => { clearTimeout(timeoutId); origResolve(data); };
+      state.pendingFileChunkQueue.push(entry);
+      sendRaw(JSON.stringify({ cmd:'file_read_chunk', path: path, offset: offset, length: CHUNK }));
+    });
+  }
+
+  // Update progress UI
+  function updateProgress() {
+    if (totalSize > 0) {
+      const pct = Math.min(100, (receivedBytes / totalSize * 100));
+      bar.style.width = pct.toFixed(1) + '%';
+      const elapsed = (Date.now() - _transferStartTime) / 1000;
+      const speed = elapsed > 0 ? _transferBytesTotal / elapsed : 0;
+      const remainBytes = totalSize - receivedBytes;
+      const fileEta = speed > 0 ? formatETA(remainBytes / speed) : '--:--';
+      const status = document.getElementById('fm-status');
+      if (status) status.textContent =
+        `⬇ ${filename}: ${formatBytes(receivedBytes)}/${formatBytes(totalSize)} (${pct.toFixed(0)}%) | ${formatSpeed(speed)} | ETA: ${fileEta}`;
+    }
+  }
+
+  // ── Main pipeline loop ──
+  // We keep up to PIPELINE requests in flight. As each resolves, we fire the next.
+  const inflight = [];  // array of { offset, promise }
+
+  // Seed initial requests
+  const fileEnd = totalSize > 0 ? totalSize : Infinity;
+  while (inflight.length < PIPELINE && nextSendOffset < fileEnd && !_transferCancelled) {
+    const off = nextSendOffset;
+    inflight.push({ offset: off, promise: fireRequest(off) });
+    nextSendOffset += CHUNK;
+  }
+
+  // Process results in order
+  while (inflight.length > 0) {
+    if (_transferCancelled) {
+      // Drain remaining promises (they'll resolve but we ignore them)
+      state.pendingFileChunkQueue.length = 0;
+      break;
+    }
+
+    const current = inflight.shift();
     let chunkData = null;
-    let lastErr = null;
-
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      chunkData = await current.promise;
+    } catch (e) {
+      // Retry once on timeout/error
       try {
-        chunkData = await new Promise((resolve, reject) => {
-          state.pendingFileChunkResolve = { resolve, reject };
-          sendRaw(JSON.stringify({ cmd:'file_read_chunk', path: path, offset: offset, length: CHUNK }));
-          const timeoutId = setTimeout(() => {
-            if (state.pendingFileChunkResolve) {
-              state.pendingFileChunkResolve = null;
-              reject(new Error('Timeout'));
-            }
-          }, 60000); // 60s timeout per chunk
-          // Store timeout ID so we can clear it on success
-          const origResolve = state.pendingFileChunkResolve.resolve;
-          state.pendingFileChunkResolve.resolve = (data) => {
-            clearTimeout(timeoutId);
-            origResolve(data);
-          };
-        });
-        break; // Success - exit retry loop
-      } catch (e) {
-        lastErr = e;
-        if (attempt < MAX_RETRIES - 1) {
-          await new Promise(r => setTimeout(r, 500 * (attempt + 1))); // Backoff
-        }
+        chunkData = await fireRequest(current.offset);
+      } catch (e2) {
+        pipelineError = e2;
+        break;
       }
     }
 
     if (!chunkData || chunkData.byteLength === 0) {
-      // If we got 0 bytes but expected more (based on totalSize), it's an error
-      if (totalSize > 0 && offset < totalSize && consecutiveErrors < 2) {
-        consecutiveErrors++;
-        // Try again for this offset
-        continue;
-      }
-      break; // Real EOF or too many errors
+      break; // EOF
     }
 
-    consecutiveErrors = 0;
     chunks.push(new Uint8Array(chunkData));
-    offset += chunkData.byteLength;
-    if (totalSize > 0) {
-      const pct = Math.min(100, (offset/totalSize*100));
-      bar.style.width = pct.toFixed(1)+'%';
-      if (!silent) {
-        const status = document.getElementById('fm-status');
-        if (status) status.textContent = `Downloading ${filename}: ${formatBytes(offset)} / ${formatBytes(totalSize)} (${pct.toFixed(0)}%)`;
-      }
+    receivedBytes += chunkData.byteLength;
+    _transferBytesTotal += chunkData.byteLength;
+    updateProgress();
+
+    // Was this the last chunk? (short read = EOF)
+    if (chunkData.byteLength < CHUNK) {
+      // Drain any remaining in-flight (they'll return 0 bytes or error — ignore)
+      state.pendingFileChunkQueue.length = 0;
+      break;
     }
-    if (chunkData.byteLength < CHUNK) break; // Last chunk
+
+    // Fire next request to keep pipeline full
+    if (nextSendOffset < fileEnd && !_transferCancelled) {
+      const off = nextSendOffset;
+      inflight.push({ offset: off, promise: fireRequest(off) });
+      nextSendOffset += CHUNK;
+    }
   }
 
   bar.style.width = '0%';
@@ -2668,7 +2972,6 @@ async function downloadFromHost(path, filename, silent) {
   // Validate downloaded size
   const total = chunks.reduce((a, c) => a + c.length, 0);
   if (totalSize > 0 && total < totalSize * 0.95) {
-    // Downloaded significantly less than expected
     notify(`Warning: ${filename} — expected ${formatBytes(totalSize)}, got ${formatBytes(total)}`, 'warn');
   }
 
@@ -2733,20 +3036,30 @@ async function handleUpload(input) {
   const files = Array.from(input.files);
   if (!files.length) return;
   const bar = document.getElementById('fm-progress');
-  
-  for (const file of files) {
+  const status = document.getElementById('fm-status');
+  const uploadStart = Date.now();
+  let totalUploaded = 0;
+  const grandTotal = files.reduce((s, f) => s + f.size, 0);
+  showCancelBtn(true);
+  _transferCancelled = false;
+
+  for (let fi = 0; fi < files.length; fi++) {
+    const file = files[fi];
+    if (_transferCancelled) break;
     notify(`Uploading: ${file.name}`, 'info');
     const path = state.currentPath + '\\' + file.name;
-    const CHUNK = 65536;
+    const CHUNK = 524288; // 512KB chunks (was 64KB)
     let offset = 0;
     const reader = new FileReader();
-    
+    let batchCount = 0;
+
     while (offset < file.size) {
+      if (_transferCancelled) break;
       const slice = file.slice(offset, offset + CHUNK);
       const arrBuf = await new Promise(r => { reader.onload = e => r(e.target.result); reader.readAsArrayBuffer(slice); });
       const arr = new Uint8Array(arrBuf);
       const last = (offset + arr.length) >= file.size;
-      
+
       // Build WCHK message
       const pathBytes = new TextEncoder().encode(path);
       const msg = new Uint8Array(4 + 1 + 2 + pathBytes.length + 8 + arr.length);
@@ -2758,14 +3071,29 @@ async function handleUpload(input) {
       dv.setBigUint64(7 + pathBytes.length, BigInt(offset), true);
       msg.set(arr, 7 + pathBytes.length + 8);
       sendRaw(msg.buffer);
-      
+
       offset += arr.length;
-      bar.style.width = Math.min(100, (offset/file.size*100)).toFixed(1)+'%';
-      await new Promise(r => setTimeout(r, 5));
+      totalUploaded += arr.length;
+      batchCount++;
+      const pct = Math.min(100, (offset / file.size * 100));
+      bar.style.width = pct.toFixed(1) + '%';
+
+      // Speed / ETA
+      const elapsed = (Date.now() - uploadStart) / 1000;
+      const speed = elapsed > 0 ? totalUploaded / elapsed : 0;
+      const remainBytes = grandTotal - totalUploaded;
+      const eta = speed > 0 ? formatETA(remainBytes / speed) : '--:--';
+      if (status) status.textContent =
+        `⬆ ${fi+1}/${files.length}: ${file.name} — ${formatBytes(offset)}/${formatBytes(file.size)} (${pct.toFixed(0)}%) | ${formatSpeed(speed)} | ETA: ${eta}`;
+
+      // Yield to UI every 8 chunks to keep page responsive, but no artificial delay
+      if (batchCount % 8 === 0) await new Promise(r => setTimeout(r, 0));
     }
     bar.style.width = '0%';
-    notify(`Uploaded: ${file.name}`, 'success');
+    if (!_transferCancelled) notify(`Uploaded: ${file.name}`, 'success');
   }
+  showCancelBtn(false);
+  if (status) status.textContent = _transferCancelled ? 'Upload cancelled' : 'Ready';
   input.value = '';
   refreshFiles();
 }
