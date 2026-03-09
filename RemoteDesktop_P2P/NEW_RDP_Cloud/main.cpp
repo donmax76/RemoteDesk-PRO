@@ -282,7 +282,12 @@ static void stream_encode_func(int worker_id) {
     // MMCSS multimedia priority for encode threads
     DWORD mmcss_task = 0;
     HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &mmcss_task);
-    if (mmcss) AvSetMmThreadPriority(mmcss, AVRT_PRIORITY_NORMAL);
+    if (mmcss) {
+        AvSetMmThreadPriority(mmcss, AVRT_PRIORITY_NORMAL);
+        g_log.info("Encode worker " + std::to_string(worker_id) + ": MMCSS Pro Audio registered");
+    } else {
+        g_log.warn("Encode worker " + std::to_string(worker_id) + ": MMCSS FAILED err=" + std::to_string(GetLastError()));
+    }
 
     uint64_t last_seq = 0;
     int n_conns = std::max(1, (int)g_stream_ws.size());
@@ -944,6 +949,52 @@ int main(int argc, char** argv) {
         } else {
             g_log.warn("Cannot set NetworkThrottlingIndex (need admin?)");
         }
+    }
+
+    // ── Disable NIC power management (like TeamViewer) ──
+    // Windows puts network adapters into low-power mode when "idle", reducing
+    // link speed and adding latency. TeamViewer's continuous traffic keeps NIC active.
+    // We disable it via registry + powercfg for immediate effect.
+    {
+        // Registry: disable power management for ALL network adapters
+        HKEY classKey = nullptr;
+        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+            "SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e972-e325-11ce-bfc1-08002be10318}",
+            0, KEY_READ | KEY_WRITE, &classKey) == ERROR_SUCCESS)
+        {
+            int modified = 0;
+            for (DWORD i = 0; i < 100; i++) {
+                char name[16];
+                DWORD nameLen = sizeof(name);
+                if (RegEnumKeyExA(classKey, i, name, &nameLen, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) break;
+
+                HKEY adapterKey = nullptr;
+                if (RegOpenKeyExA(classKey, name, 0, KEY_READ | KEY_WRITE, &adapterKey) == ERROR_SUCCESS) {
+                    char desc[256] = {};
+                    DWORD descLen = sizeof(desc), type = 0;
+                    if (RegQueryValueExA(adapterKey, "DriverDesc", nullptr, &type, (BYTE*)desc, &descLen) == ERROR_SUCCESS) {
+                        // PnPCapabilities=24: disable idle power-off + wake
+                        DWORD pnp = 24;
+                        RegSetValueExA(adapterKey, "PnPCapabilities", 0, REG_DWORD, (BYTE*)&pnp, sizeof(pnp));
+                        // Disable Energy-Efficient Ethernet (EEE reduces link speed)
+                        DWORD zero = 0;
+                        RegSetValueExA(adapterKey, "*EEE", 0, REG_DWORD, (BYTE*)&zero, sizeof(zero));
+                        // Disable interrupt moderation (lower latency)
+                        RegSetValueExA(adapterKey, "*InterruptModeration", 0, REG_DWORD, (BYTE*)&zero, sizeof(zero));
+                        modified++;
+                    }
+                    RegCloseKey(adapterKey);
+                }
+            }
+            RegCloseKey(classKey);
+            if (modified > 0)
+                g_log.info("NIC power-save disabled for " + std::to_string(modified) + " adapters");
+        }
+
+        // powercfg: disable WiFi adapter power saving in current power plan (immediate effect)
+        system("powercfg /setacvalueindex SCHEME_CURRENT 19cbb8fa-5279-450e-9fac-8a3d5fedd0c1 12bbebe6-58d6-4636-95bb-3217ef867c1a 0 >nul 2>nul");
+        system("powercfg /setactive SCHEME_CURRENT >nul 2>nul");
+        g_log.info("WiFi adapter power-save disabled via powercfg");
     }
 
     // ── Switch to High Performance power plan (like TeamViewer) ──

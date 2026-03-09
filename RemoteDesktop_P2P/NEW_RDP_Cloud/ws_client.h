@@ -58,8 +58,8 @@ public:
         BOOL tcp_ka = TRUE;
         setsockopt(sock_, SOL_SOCKET, SO_KEEPALIVE, (const char*)&tcp_ka, sizeof(tcp_ka));
 
-        // Increase send buffer to 1MB to reduce blocking on large SCRN frames
-        int sndbuf = 1024 * 1024;
+        // Increase send buffer to 2MB to reduce blocking on large SCRN frames
+        int sndbuf = 2 * 1024 * 1024;
         setsockopt(sock_, SOL_SOCKET, SO_SNDBUF, (const char*)&sndbuf, sizeof(sndbuf));
 
         // Disable Nagle's algorithm for lower latency
@@ -74,8 +74,8 @@ public:
         DWORD bytes_ret = 0;
         WSAIoctl(sock_, SIO_TCP_SET_ACK_FREQUENCY, &freq, sizeof(freq), NULL, 0, &bytes_ret, NULL, NULL);
 
-        // Increase receive buffer to 1MB (matches send buffer)
-        int rcvbuf = 1024 * 1024;
+        // Increase receive buffer to 2MB (matches send buffer)
+        int rcvbuf = 2 * 1024 * 1024;
         setsockopt(sock_, SOL_SOCKET, SO_RCVBUF, (const char*)&rcvbuf, sizeof(rcvbuf));
 
         addrinfo hints{}, *res{};
@@ -182,7 +182,7 @@ public:
 
 private:
     static const size_t kMaxNormalQueue = 2;
-    static const int kPingIntervalSec = 15;  // More frequent pings (was 30)
+    static const int kPingIntervalSec = 5;   // Frequent pings to keep NIC active (was 15)
 
     struct Outgoing {
         WsOpcode opcode;

@@ -14,6 +14,7 @@ import time
 import ssl
 import os
 import base64
+import socket
 from typing import Dict, Optional, Set
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -231,7 +232,7 @@ PORT = int(os.environ.get("RDP_PORT", "8080"))
 ADMIN_TOKEN = os.environ.get("RDP_ADMIN_TOKEN", "change-me-admin-token")
 MAX_ROOMS = int(os.environ.get("RDP_MAX_ROOMS", "100"))
 MAX_CLIENTS_PER_ROOM = int(os.environ.get("RDP_MAX_CLIENTS", "10"))
-PING_INTERVAL = 20
+PING_INTERVAL = 5    # Keep NIC active — short pings prevent adapter power-save
 PING_TIMEOUT = 120
 SSL_CERT = os.environ.get("RDP_SSL_CERT", "")
 SSL_KEY  = os.environ.get("RDP_SSL_KEY", "")
@@ -327,10 +328,20 @@ async def cleanup_empty_rooms():
 async def handler(websocket, path: str):
     remote = websocket.remote_address
     log.info(f"New connection from {remote} path={path}")
-    
+
+    # ── TCP buffer optimization: large buffers + no-delay for throughput ──
+    try:
+        sock = websocket.transport.get_extra_info("socket")
+        if sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2 * 1024 * 1024)  # 2MB send
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2 * 1024 * 1024)  # 2MB recv
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)              # No Nagle
+    except Exception:
+        pass
+
     conn: Optional[Connection] = None
     room: Optional[Room] = None
-    
+
     try:
         # ── Auth phase ─────────────────────────────────────────────────────
         try:
