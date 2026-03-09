@@ -1,0 +1,11 @@
+{
+    "server": "YOUR_VPS_IP",
+    "port": 8080,
+    "token": "my-room-token-123",
+    "password": "secret-password",
+    "quality": 80,
+    "fps": 30,
+    "scale": 60,
+    "codec": "h264",
+    "log_level": "INFO"
+}

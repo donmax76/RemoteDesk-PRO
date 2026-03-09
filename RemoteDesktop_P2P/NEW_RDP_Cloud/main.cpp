@@ -59,8 +59,14 @@ static std::mutex g_h264_mtx;
 static std::unique_ptr<H264Encoder> g_h264_encoder;
 static std::atomic<bool> g_h264_keyframe_requested{false};
 
-// Adaptive quality
+// Adaptive quality + auto-scale
 static std::atomic<int> g_adaptive_quality{75};
+static std::atomic<int> g_auto_scale{80};        // Current auto-adjusted scale
+static int g_user_scale = 80;                    // Scale set by user (target)
+static std::atomic<int> g_consecutive_slow{0};   // Frames above 2x target time
+static std::atomic<int> g_consecutive_fast{0};   // Frames below target/2 time
+static std::atomic<int64_t> g_bytes_sent_total{0}; // Total bytes sent for throughput calc
+static std::atomic<int64_t> g_throughput_bps{0};   // Measured throughput (bytes/sec)
 
 // Recording state
 static std::atomic<bool> g_recording{false};
@@ -135,21 +141,55 @@ static void update_adaptive_quality(int64_t encode_send_ms, size_t frame_bytes) 
     int max_q = g_quality;
     int target_ms = 1000 / std::max(5, g_fps);  // e.g. 33ms for 30fps
 
-    if (encode_send_ms > target_ms * 3) {
-        // Extremely slow: emergency drop
-        g_adaptive_quality = std::max(10, current - 20);
-    } else if (encode_send_ms > target_ms * 2) {
-        // Very slow: aggressive drop
-        g_adaptive_quality = std::max(10, current - 10);
-    } else if (encode_send_ms > target_ms) {
-        // Too slow: moderate drop
-        g_adaptive_quality = std::max(10, current - 5);
-    } else if (encode_send_ms > target_ms * 3 / 4) {
-        // Slightly slow: gentle drop
-        g_adaptive_quality = std::max(10, current - 2);
-    } else if (encode_send_ms < target_ms / 2 && frame_bytes < 60000 && current < max_q) {
-        // Fast + small frames: can increase quality slowly
-        g_adaptive_quality = std::min(max_q, current + 1);
+    // Track throughput
+    g_bytes_sent_total += frame_bytes;
+
+    if (encode_send_ms > target_ms * 2) {
+        g_consecutive_fast = 0;
+        int slow = ++g_consecutive_slow;
+
+        // Phase 1: Reduce JPEG quality aggressively
+        if (encode_send_ms > target_ms * 5) {
+            g_adaptive_quality = std::max(10, current - 30);
+        } else if (encode_send_ms > target_ms * 3) {
+            g_adaptive_quality = std::max(10, current - 20);
+        } else {
+            g_adaptive_quality = std::max(10, current - 10);
+        }
+
+        // Phase 2: Quality already at minimum → reduce SCALE
+        if (current <= 15 && slow > g_fps) {
+            int cur_scale = g_auto_scale.load();
+            if (cur_scale > 30) {
+                g_auto_scale = cur_scale - 10;
+                g_screen.set_scale(g_auto_scale);
+                g_consecutive_slow = 0;
+                g_log.info("Auto-scale DOWN: " + std::to_string(g_auto_scale) + "% (FPS too low, quality already min)");
+            }
+        }
+    } else if (encode_send_ms < target_ms / 2) {
+        g_consecutive_slow = 0;
+        int fast = ++g_consecutive_fast;
+
+        // Slowly recover scale if consistently fast (5+ seconds of headroom)
+        if (fast > g_fps * 5) {
+            int cur_scale = g_auto_scale.load();
+            if (cur_scale < g_user_scale) {
+                g_auto_scale = std::min(g_user_scale, cur_scale + 5);
+                g_screen.set_scale(g_auto_scale);
+                g_consecutive_fast = 0;
+                g_log.info("Auto-scale UP: " + std::to_string(g_auto_scale) + "%");
+            }
+        }
+
+        // Recover quality slowly
+        if (frame_bytes < 60000 && current < max_q) {
+            g_adaptive_quality = std::min(max_q, current + 1);
+        }
+    } else {
+        // Normal range — reset counters
+        g_consecutive_slow = 0;
+        g_consecutive_fast = 0;
     }
 }
 
@@ -293,7 +333,9 @@ static void stream_encode_func(int worker_id) {
                 {
                     g_h264_encoder.reset();
                     auto enc = std::make_unique<H264Encoder>();
-                    int bitrate = std::max(500, std::min(8000, w * h * g_fps / 12000));
+                    // Conservative bitrate for relay streaming (host→VPS→client)
+                    // Lower bitrate = smaller frames = less network congestion
+                    int bitrate = std::max(300, std::min(4000, w * h * g_fps / 25000));
                     if (enc->init(w, h, g_fps, bitrate)) {
                         g_h264_encoder = std::move(enc);
                     } else {
@@ -372,8 +414,13 @@ static void stream_encode_func(int worker_id) {
             if (g_fps_log_time.compare_exchange_strong(last_log, now_ms)) {
                 int frames = g_sent_frames.exchange(0);
                 float fps = frames * 1000.0f / (float)(now_ms - last_log);
+                int64_t bytes_5s = g_bytes_sent_total.exchange(0);
+                int64_t throughput = bytes_5s * 1000 / std::max((int64_t)1, now_ms - last_log);
+                g_throughput_bps = throughput;
                 std::string info = "Stream: " + std::to_string(fps).substr(0,4) + " FPS, " +
-                    std::to_string(frame_bytes/1024) + "KB, enc=" + std::to_string(elapsed_ms) + "ms";
+                    std::to_string(frame_bytes/1024) + "KB, enc=" + std::to_string(elapsed_ms) + "ms" +
+                    ", throughput=" + std::to_string(throughput/1024) + "KB/s" +
+                    ", scale=" + std::to_string(g_auto_scale.load()) + "%";
                 if (use_h264) info += " [H264]";
                 else info += " q=" + std::to_string(g_adaptive_quality.load());
                 g_log.info(info);
@@ -399,6 +446,12 @@ static void start_streaming() {
     g_frame_seq = 0;
     g_sent_frames = 0;
     g_fps_log_time = 0;
+    g_consecutive_slow = 0;
+    g_consecutive_fast = 0;
+    g_bytes_sent_total = 0;
+    g_throughput_bps = 0;
+    g_auto_scale = g_user_scale;
+    g_screen.set_scale(g_auto_scale);
 
     // Open dedicated stream connections (parallel to command connection)
     int n_conns = std::max(1, std::min(4, g_config.screen_connections));
@@ -504,11 +557,11 @@ static void handle_command(const std::string& msg_str) {
             if (!codec.empty()) g_codec = codec;
             if (!q_s.empty())   g_quality = std::stoi(q_s);
             if (!fps_s.empty()) g_fps     = std::stoi(fps_s);
-            if (!sc_s.empty())  g_scale   = std::stoi(sc_s);
+            if (!sc_s.empty())  { g_scale = std::stoi(sc_s); g_user_scale = g_scale; g_auto_scale = g_scale; }
 
             g_screen.set_codec(g_codec);
             g_screen.set_quality(g_quality);
-            g_screen.set_scale(g_scale);
+            g_screen.set_scale(g_auto_scale);
 
             // Respond IMMEDIATELY so client doesn't timeout while we create stream connections
             send_ok("\"started\"");
@@ -530,7 +583,7 @@ static void handle_command(const std::string& msg_str) {
             if (!codec.empty()) { g_codec = codec; g_screen.set_codec(g_codec); }
             if (!q_s.empty())   { g_quality = std::stoi(q_s); g_screen.set_quality(g_quality); g_adaptive_quality = g_quality; }
             if (!fps_s.empty()) g_fps = std::stoi(fps_s);
-            if (!sc_s.empty())  { g_scale = std::stoi(sc_s); g_screen.set_scale(g_scale); }
+            if (!sc_s.empty())  { g_scale = std::stoi(sc_s); g_user_scale = g_scale; g_auto_scale = g_scale; g_screen.set_scale(g_scale); }
             // Restart pipeline on codec change (H.264↔JPEG needs different encoder)
             if (codec_changed && g_streaming) {
                 g_log.info("Codec changed to " + g_codec + ", restarting stream pipeline");
@@ -935,6 +988,8 @@ int main(int argc, char** argv) {
     g_fps     = g_config.fps;
     g_quality = g_config.quality;
     g_scale   = g_config.scale;
+    g_user_scale = g_scale;
+    g_auto_scale = g_scale;
     g_codec   = g_config.codec;
 
     WSADATA wsa;
