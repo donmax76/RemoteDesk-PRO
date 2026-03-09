@@ -1071,7 +1071,7 @@ body {
         <button title="Scale +" onclick="adjustScale(10)">+</button>
         <select id="codec-select" class="codec-select" onchange="changeCodec(this.value)" title="Codec">
           <option value="jpeg">JPEG</option>
-          <option value="h264">H.264</option>
+          <option value="h264" selected>H.264</option>
         </select>
         <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;color:var(--muted);">
           <input type="checkbox" id="stream-compressed" onchange="toggleCompressed(this.checked)" /> Compressed
@@ -1132,7 +1132,10 @@ body {
           </table>
         </div>
       </div>
-      <div id="fm-status" style="padding:4px 12px;font-size:11px;color:var(--muted);background:var(--panel);border-top:1px solid var(--border);">Ready</div>
+      <div style="display:flex;align-items:center;background:var(--panel);border-top:1px solid var(--border);">
+        <div id="fm-status" style="flex:1;padding:4px 12px;font-size:11px;color:var(--muted);">Ready</div>
+        <button id="btn-cancel-transfer" class="fm-btn danger" style="display:none;margin:2px 8px;padding:2px 12px;font-size:12px;font-weight:bold;" onclick="cancelTransfer()">✕ CANCEL</button>
+      </div>
     </div>
 
     <!-- ── PROCESSES ── -->
@@ -1340,7 +1343,7 @@ const state = {
   fps: 25,
   scale: 60,
   compressed: false,
-  codec: 'jpeg',
+  codec: 'h264',
   // File manager
   currentPath: 'C:\\',
   selectedFiles: new Set(),
@@ -2691,6 +2694,17 @@ function getSelectedFileNames() {
   });
   return names;
 }
+// ── Transfer cancel mechanism ──
+let _transferCancelled = false;
+function cancelTransfer() {
+  _transferCancelled = true;
+  notify('Cancelling...', 'warn', 1000);
+}
+function showCancelBtn(show) {
+  const btn = document.getElementById('btn-cancel-transfer');
+  if (btn) btn.style.display = show ? 'inline-block' : 'none';
+}
+
 async function downloadSelected() {
   const selectedNames = getSelectedFileNames();
   if (!selectedNames.length) {
@@ -2711,13 +2725,14 @@ async function downloadSelected() {
     }
   }
   if (!toDownload.length) { notify('Nothing to download', 'warn'); return; }
+  _transferCancelled = false;
+  showCancelBtn(true);
   notify(`Downloading ${toDownload.length} file(s)...`, 'info');
   let ok = 0, fail = 0;
   for (let i = 0; i < toDownload.length; i++) {
+    if (_transferCancelled) { notify('Download cancelled', 'warn'); break; }
     const { path, saveName } = toDownload[i];
     try {
-      // For folder downloads, flatten the saveName by replacing / with _
-      // (browser downloads can't create subdirectories)
       const flatName = saveName.replace(/[\/\\]/g, '_');
       document.getElementById('fm-status').textContent = `Downloading ${i+1}/${toDownload.length}: ${flatName}`;
       await downloadFromHost(path, flatName, true);
@@ -2725,10 +2740,13 @@ async function downloadSelected() {
     } catch (e) { fail++; notify('Failed: ' + saveName, 'error'); }
     if (i < toDownload.length - 1) await new Promise(r => setTimeout(r, 100));
   }
+  showCancelBtn(false);
   selectedNames.forEach(function(n) { state.selectedFiles.delete(n); });
   document.querySelectorAll('.fm-cb').forEach(cb => { cb.checked = false; });
-  const statusMsg = `Downloaded ${ok}/${toDownload.length} file(s)` + (fail ? `, ${fail} failed` : '');
-  notify(statusMsg, fail ? 'warn' : 'success');
+  const statusMsg = _transferCancelled
+    ? `Download cancelled. ${ok}/${toDownload.length} done`
+    : `Downloaded ${ok}/${toDownload.length} file(s)` + (fail ? `, ${fail} failed` : '');
+  notify(statusMsg, fail || _transferCancelled ? 'warn' : 'success');
   document.getElementById('fm-status').textContent = statusMsg;
 }
 
@@ -2762,6 +2780,7 @@ async function copySelected() {
   const destBase = normPath(dest) + (dest.endsWith('\\') ? '' : '\\');
   const base = normPath(state.currentPath) + '\\';
   const toCopy = [];
+  document.getElementById('fm-status').textContent = 'Scanning files...';
   for (const name of selectedNames) {
     const item = state.fileList.find(i => (i.name || '').trim() === (name || '').trim());
     const from = base + name;
@@ -2774,17 +2793,32 @@ async function copySelected() {
     }
   }
   if (!toCopy.length) { notify('Nothing to copy', 'warn'); return; }
+  _transferCancelled = false;
+  showCancelBtn(true);
+  const bar = document.getElementById('fm-progress');
   notify(`Copying ${toCopy.length} item(s)...`, 'info');
   let ok = 0, fail = 0;
-  for (const { from, to } of toCopy) {
+  const total = toCopy.length;
+  for (let i = 0; i < total; i++) {
+    if (_transferCancelled) { notify('Copy cancelled', 'warn'); break; }
+    const { from, to } = toCopy[i];
+    const fname = from.split('\\').pop() || from;
+    document.getElementById('fm-status').textContent = `Copying ${i+1}/${total}: ${fname}`;
+    if (bar) bar.style.width = ((i+1)/total*100).toFixed(1) + '%';
     try {
       await sendCmd({ cmd: 'file_copy', from, to });
       ok++;
     } catch (e) { fail++; }
   }
+  showCancelBtn(false);
+  if (bar) bar.style.width = '0%';
   selectedNames.forEach(function(n) { state.selectedFiles.delete(n); });
   document.querySelectorAll('.fm-cb').forEach(cb => { cb.checked = false; });
-  notify(`Copied ${ok}. Failed: ${fail}`, fail ? 'warn' : 'success');
+  const statusMsg = _transferCancelled
+    ? `Copy cancelled. ${ok}/${total} done`
+    : `Copied ${ok}/${total}` + (fail ? `, ${fail} failed` : '');
+  notify(statusMsg, fail || _transferCancelled ? 'warn' : 'success');
+  document.getElementById('fm-status').textContent = statusMsg;
   refreshFiles();
 }
 
@@ -2809,6 +2843,7 @@ async function downloadFromHost(path, filename, silent) {
   let consecutiveErrors = 0;
 
   while (true) {
+    if (_transferCancelled) break;
     let chunkData = null;
     let lastErr = null;
 

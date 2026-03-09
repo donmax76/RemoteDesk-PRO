@@ -995,6 +995,15 @@ int main(int argc, char** argv) {
         system("powercfg /setacvalueindex SCHEME_CURRENT 19cbb8fa-5279-450e-9fac-8a3d5fedd0c1 12bbebe6-58d6-4636-95bb-3217ef867c1a 0 >nul 2>nul");
         system("powercfg /setactive SCHEME_CURRENT >nul 2>nul");
         g_log.info("WiFi adapter power-save disabled via powercfg");
+
+        // Disable USB selective suspend (can throttle USB NIC/WiFi adapters)
+        system("powercfg /setacvalueindex SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 >nul 2>nul");
+        // Disable PCI Express Link State Power Management (throttles PCIe NICs)
+        system("powercfg /setacvalueindex SCHEME_CURRENT 501a4d13-42af-4429-9fd1-a8218c268e20 ee12f906-d277-404b-b6da-e5fa1a576df5 0 >nul 2>nul");
+        // Disable processor idle (minimum processor state = 100%)
+        system("powercfg /setacvalueindex SCHEME_CURRENT 54533251-82be-4824-96c1-47b60b740d00 893dee8e-2bef-41e0-89c6-b55d0929964c 100 >nul 2>nul");
+        system("powercfg /setactive SCHEME_CURRENT >nul 2>nul");
+        g_log.info("USB suspend + PCIe power + CPU idle all disabled");
     }
 
     // ── Switch to High Performance power plan (like TeamViewer) ──

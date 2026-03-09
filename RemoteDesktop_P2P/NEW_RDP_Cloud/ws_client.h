@@ -182,7 +182,7 @@ public:
 
 private:
     static const size_t kMaxNormalQueue = 2;
-    static const int kPingIntervalSec = 5;   // Frequent pings to keep NIC active (was 15)
+    static const int kPingIntervalSec = 2;   // Very frequent pings to keep NIC active (prevents power-save)
 
     struct Outgoing {
         WsOpcode opcode;
@@ -308,7 +308,7 @@ private:
         if (mmH) AvRevertMmThreadCharacteristics(mmH);
     }
 
-    // Keepalive: send PING every 15s (was 30s)
+    // Keepalive: send PING every 2s to prevent NIC power-save
     void keepalive_loop() {
         while (connected_) {
             for (int i = 0; i < kPingIntervalSec * 10 && connected_; ++i)
