@@ -10,6 +10,12 @@
 #include "h264_encoder.h"
 #include "file_manager.h"
 #include "process_manager.h"
+
+// High-resolution timer + multimedia thread scheduling
+#include <mmsystem.h>
+#include <avrt.h>
+#pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "avrt.lib")
 #ifdef USE_WEBRTC_STREAM
 #include "webrtc_stream.h"
 #endif
@@ -169,6 +175,15 @@ static std::vector<uint8_t> build_scrn_msg(const ScreenCapture::Frame& fr) {
 // Capture thread: captures raw pixels at target FPS
 static void stream_capture_func() {
     g_log.info("Capture thread started");
+
+    // Register as multimedia thread for priority scheduling (like TeamViewer)
+    DWORD mmcss_task = 0;
+    HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &mmcss_task);
+    if (mmcss) {
+        AvSetMmThreadPriority(mmcss, AVRT_PRIORITY_HIGH);
+        g_log.info("Capture thread: MMCSS Pro Audio priority set");
+    }
+
     int consecutive_failures = 0;
 
     while (g_streaming && g_running) {
@@ -203,12 +218,19 @@ static void stream_capture_func() {
         if (elapsed < frame_dur)
             std::this_thread::sleep_for(frame_dur - elapsed);
     }
+    if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
     g_log.info("Capture thread stopped");
 }
 
 // Encode worker: takes raw frames, encodes (JPEG or H.264), sends via connection
 static void stream_encode_func(int worker_id) {
     g_log.info("Encode worker " + std::to_string(worker_id) + " started, codec=" + g_codec);
+
+    // MMCSS multimedia priority for encode threads
+    DWORD mmcss_task = 0;
+    HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &mmcss_task);
+    if (mmcss) AvSetMmThreadPriority(mmcss, AVRT_PRIORITY_NORMAL);
+
     uint64_t last_seq = 0;
     int n_conns = std::max(1, (int)g_stream_ws.size());
     bool use_h264 = (g_codec == "h264" || g_codec == "h265");
@@ -351,6 +373,7 @@ static void stream_encode_func(int worker_id) {
         std::lock_guard<std::mutex> lk(g_h264_mtx);
         g_h264_encoder.reset();
     }
+    if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
     g_log.info("Encode worker " + std::to_string(worker_id) + " stopped");
 }
 
@@ -820,6 +843,14 @@ int main(int argc, char** argv) {
     g_log.set_file("C:\\RemoteDesktopHost.log");
     g_log.info("=== RemoteDesktop Host starting ===");
 
+    // ── Performance: 1ms timer resolution (like TeamViewer) ──
+    // Without this, Sleep/WaitFor* have ~15.6ms granularity, killing FPS and throughput
+    timeBeginPeriod(1);
+
+    // ── Elevate process priority for better scheduling ──
+    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+    g_log.info("Timer resolution set to 1ms, process priority elevated to HIGH");
+
     std::string cfg_path = "host_config.json";
     if (argc > 1) cfg_path = argv[1];
     load_config(cfg_path);
@@ -875,6 +906,7 @@ int main(int argc, char** argv) {
     }
 
     stop_streaming();
+    timeEndPeriod(1);
     g_log.info("Host shutting down");
     WSACleanup();
     return 0;

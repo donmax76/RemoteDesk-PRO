@@ -437,7 +437,7 @@ async def handler(websocket, path: str):
                     except:
                         log.warning(f"Failed to forward binary to host")
                 elif role == "host":
-                    if len(raw_msg) >= 4 and raw_msg[:4] == b'SCRN':
+                    if len(raw_msg) >= 4 and raw_msg[:4] in (b'SCRN', b'SCR2'):
                         # SCRN frames → ONLY to stream_clients, NOT to command clients
                         # Fire-and-forget: never blocks the host handler
                         enqueue_scrn_to_stream_clients(room, raw_msg)
@@ -672,7 +672,7 @@ async def main():
         ping_interval=PING_INTERVAL,
         ping_timeout=PING_TIMEOUT,
         max_size=50 * 1024 * 1024,
-        write_limit=256 * 1024,  # 256KB write buffer for large SCRN frames
+        write_limit=2 * 1024 * 1024,  # 2MB write buffer for large file chunks and SCRN frames
         compression=None,
         process_request=_fix_connection_header,
     )

@@ -62,6 +62,19 @@ public:
         BOOL nodelay = TRUE;
         setsockopt(sock_, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
 
+        // Reduce TCP delayed ACK: ACK every packet instead of every 2nd
+        // Windows default is 200ms delay or every 2 packets — halves RTT for file transfers
+        #ifndef SIO_TCP_SET_ACK_FREQUENCY
+        #define SIO_TCP_SET_ACK_FREQUENCY _WSAIOW(IOC_VENDOR,23)
+        #endif
+        int freq = 1;  // ACK every packet
+        DWORD bytes_ret = 0;
+        WSAIoctl(sock_, SIO_TCP_SET_ACK_FREQUENCY, &freq, sizeof(freq), NULL, 0, &bytes_ret, NULL, NULL);
+
+        // Increase receive buffer to 1MB (matches send buffer)
+        int rcvbuf = 1024 * 1024;
+        setsockopt(sock_, SOL_SOCKET, SO_RCVBUF, (const char*)&rcvbuf, sizeof(rcvbuf));
+
         addrinfo hints{}, *res{};
         hints.ai_family   = AF_INET;
         hints.ai_socktype = SOCK_STREAM;
