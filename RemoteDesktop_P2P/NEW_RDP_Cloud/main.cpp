@@ -861,7 +861,29 @@ int main(int argc, char** argv) {
 
     // ── Elevate process priority for better scheduling ──
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-    g_log.info("Timer resolution set to 1ms, process priority elevated to HIGH");
+
+    // ── Disable Windows Network Throttling (like TeamViewer) ──
+    // Windows limits non-multimedia network to ~10 packets/ms by default.
+    // Setting NetworkThrottlingIndex=0xFFFFFFFF disables this completely.
+    // SystemResponsiveness=0 gives 100% CPU to foreground/MMCSS threads.
+    {
+        HKEY hKey = nullptr;
+        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+            "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile",
+            0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS)
+        {
+            DWORD val = 0xFFFFFFFF;
+            RegSetValueExA(hKey, "NetworkThrottlingIndex", 0, REG_DWORD, (BYTE*)&val, sizeof(val));
+            DWORD resp = 0;  // 0 = give all CPU to MMCSS/foreground
+            RegSetValueExA(hKey, "SystemResponsiveness", 0, REG_DWORD, (BYTE*)&resp, sizeof(resp));
+            RegCloseKey(hKey);
+            g_log.info("Network throttling disabled, SystemResponsiveness=0");
+        } else {
+            g_log.warn("Cannot set NetworkThrottlingIndex (need admin?)");
+        }
+    }
+
+    g_log.info("Timer=1ms, priority=HIGH, network throttling=OFF");
 
     std::string cfg_path = "host_config.json";
     if (argc > 1) cfg_path = argv[1];

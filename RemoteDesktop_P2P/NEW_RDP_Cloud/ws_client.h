@@ -1,6 +1,8 @@
 #pragma once
 #include "host.h"
 #include "logger.h"
+#include <mmsystem.h>
+#include <avrt.h>
 #include <queue>
 #include <condition_variable>
 #include <random>
@@ -209,6 +211,11 @@ private:
     }
 
     void sender_loop() {
+        // MMCSS: sender thread gets multimedia network priority (disables throttling)
+        DWORD mmTask = 0;
+        HANDLE mmH = AvSetMmThreadCharacteristicsW(L"Pro Audio", &mmTask);
+        if (mmH) AvSetMmThreadPriority(mmH, AVRT_PRIORITY_HIGH);
+
         while (sender_running_ && connected_) {
             Outgoing msg;
             {
@@ -231,12 +238,29 @@ private:
                 connected_ = false;
                 break;
             }
+            // Drain all remaining priority messages before waiting again
+            while (sender_running_ && connected_) {
+                std::lock_guard<std::mutex> lk(q_mu_);
+                if (priority_q_.empty()) break;
+                auto m = std::move(priority_q_.front());
+                priority_q_.pop();
+                if (!send_frame_to_socket(m.opcode, m.data.data(), m.data.size())) {
+                    connected_ = false;
+                    break;
+                }
+            }
         }
+        if (mmH) AvRevertMmThreadCharacteristics(mmH);
     }
 
     // Command processing thread — handles on_text/on_binary callbacks
     // This runs heavy work (file I/O, sys_info) without blocking recv_loop
     void cmd_loop() {
+        // MMCSS for command thread too (file chunk reads → priority disk I/O)
+        DWORD mmTask = 0;
+        HANDLE mmH = AvSetMmThreadCharacteristicsW(L"Pro Audio", &mmTask);
+        if (mmH) AvSetMmThreadPriority(mmH, AVRT_PRIORITY_NORMAL);
+
         while (cmd_running_ && connected_) {
             Incoming msg;
             {
@@ -256,6 +280,7 @@ private:
                     on_binary(msg.binary);
             } catch (...) {}
         }
+        if (mmH) AvRevertMmThreadCharacteristics(mmH);
     }
 
     // Keepalive: send PING every 15s (was 30s)
