@@ -1070,12 +1070,9 @@ body {
         <span id="scale-disp" style="font-size:11px;min-width:28px;text-align:center">60%</span>
         <button title="Scale +" onclick="adjustScale(10)">+</button>
         <select id="codec-select" class="codec-select" onchange="changeCodec(this.value)" title="Codec">
+          <option value="h264">H.264</option>
           <option value="jpeg">JPEG</option>
-          <option value="h264" selected>H.264</option>
         </select>
-        <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;color:var(--muted);">
-          <input type="checkbox" id="stream-compressed" onchange="toggleCompressed(this.checked)" /> Compressed
-        </label>
         <div class="sep" style="height:16px;"></div>
         <button title="Fit/Fill" onclick="toggleFit()" id="btn-fit">⊡</button>
         <button title="Screenshot" onclick="takeScreenshot()">📷</button>
@@ -1106,7 +1103,10 @@ body {
         <input type="file" id="upload-input" class="hidden" multiple onchange="handleUpload(this)" />
       </div>
       <div class="fm-breadcrumb" id="fm-breadcrumb"></div>
-      <div class="fm-transfer-bar"><div class="fill" id="fm-progress"></div></div>
+      <div class="fm-transfer-bar" style="position:relative;">
+        <div class="fill" id="fm-progress"></div>
+        <button id="fm-cancel-btn" class="fm-btn danger" style="display:none;position:absolute;right:4px;top:-28px;padding:4px 14px;height:26px;font-size:13px;line-height:18px;min-width:auto;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,.3);" onclick="cancelDownload()">✕ Отмена</button>
+      </div>
       <div class="fm-body">
         <div class="fm-sidebar">
           <div class="fm-sidebar-section">Drives</div>
@@ -1132,10 +1132,7 @@ body {
           </table>
         </div>
       </div>
-      <div style="display:flex;align-items:center;background:var(--panel);border-top:1px solid var(--border);">
-        <div id="fm-status" style="flex:1;padding:4px 12px;font-size:11px;color:var(--muted);">Ready</div>
-        <button id="btn-cancel-transfer" class="fm-btn danger" style="display:none;margin:2px 8px;padding:2px 12px;font-size:12px;font-weight:bold;" onclick="cancelTransfer()">✕ CANCEL</button>
-      </div>
+      <div id="fm-status" style="padding:4px 12px;font-size:11px;color:var(--muted);background:var(--panel);border-top:1px solid var(--border);">Ready</div>
     </div>
 
     <!-- ── PROCESSES ── -->
@@ -1362,7 +1359,7 @@ const state = {
   // Requests
   pendingReqs: {},
   reqIdCounter: 0,
-  pendingFileChunkResolve: null,
+  pendingFileChunkMap: {},    // key = offset string, value = {resolve, reject, timeoutId} for pipelined downloads
   // WebRTC: stream over UDP (separate from WebSocket used for files/commands)
   streamWs: null,         // separate WS for SCRN binary frames only
   streamDc: null,
@@ -1434,7 +1431,6 @@ function switchPanel(name) {
     const f = document.getElementById('fps-disp'); if (f) f.textContent = state.fps;
     const s = document.getElementById('scale-disp'); if (s) s.textContent = state.scale + '%';
     const c = document.getElementById('stream-compressed'); if (c) c.checked = state.compressed;
-    const cs = document.getElementById('codec-select'); if (cs) cs.value = state.codec;
   }
   if (name === 'settings') {
     const w = document.getElementById('settings-secure-warn');
@@ -1622,7 +1618,9 @@ function connectToServer() {
   if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
   state.wantDisconnect = false;
 
-  const proto = ssl ? 'wss' : 'ws';
+  // Auto-detect wss if page loaded via HTTPS (browser blocks mixed content ws:// on https pages)
+  const pageIsHttps = window.location.protocol === 'https:';
+  const proto = (ssl || pageIsHttps) ? 'wss' : 'ws';
   const url = `${proto}://${server}:${port}/client`;
   setConnStatus('connecting');
   if (errEl) errEl.textContent = 'Connecting...';
@@ -1780,22 +1778,48 @@ function handleBinary(buf) {
 
   const sig = String.fromCharCode(arr[0], arr[1], arr[2], arr[3]);
 
-  if (sig === 'SCRN' || sig === 'SCR2') {
+  if (sig === 'SCR2') {
+    // New protocol: SCR2(4) + codec(1) + flags(1) + width(4) + height(4) + data
     if (!state.streaming) return;
-    parseScrnAndRender(buf);
+    if (arr.length < 14) return;
+    const dv = new DataView(buf);
+    const codec = arr[4];    // 0=JPEG, 1=H264
+    const flags = arr[5];    // bit0=keyframe
+    const w = dv.getUint32(6, true);
+    const h = dv.getUint32(10, true);
+    const frameData = new Uint8Array(buf, 14);
+    if (codec === 1) {
+      renderH264Frame(frameData, w, h, !!(flags & 1), buf.byteLength);
+    } else {
+      renderFrame(frameData, w, h, buf.byteLength);
+    }
+    return;
+  }
+
+  if (sig === 'SCRN') {
+    // Legacy JPEG protocol
+    if (!state.streaming) return;
+    if (arr.length < 12) return;
+    const w = new DataView(buf).getUint32(4, true);
+    const h = new DataView(buf).getUint32(8, true);
+    const jpeg = new Uint8Array(buf, 12);
+    renderFrame(jpeg, w, h, buf.byteLength);
     return;
   }
 
   if (sig === 'FILE') {
-    // File chunk response — resolve pending download promise if waiting
+    // File chunk response — resolve pending download promise by offset (Map lookup)
     const dv = new DataView(buf);
     const plen = dv.getUint16(4, true);
+    const offset = Number(dv.getBigUint64(6 + plen, true));
     const dataStart = 4 + 2 + plen + 8;
     const chunkData = dataStart < buf.byteLength ? buf.slice(dataStart) : new ArrayBuffer(0);
-    if (state.pendingFileChunkResolve) {
-      const { resolve, reject } = state.pendingFileChunkResolve;
-      state.pendingFileChunkResolve = null;
-      resolve(chunkData);
+    const key = String(offset);
+    if (state.pendingFileChunkMap[key]) {
+      const pending = state.pendingFileChunkMap[key];
+      delete state.pendingFileChunkMap[key];
+      if (pending.timeoutId) clearTimeout(pending.timeoutId);
+      pending.resolve(chunkData);
     } else {
       handleFileChunk(buf);
     }
@@ -1811,7 +1835,7 @@ function sendRaw(data) {
   return false;
 }
 
-function sendCmd(obj) {
+function sendCmd(obj, timeoutMs) {
   return new Promise((resolve, reject) => {
     if (!state.connected) { reject(new Error('Not connected')); return; }
     const id = 'r' + (++state.reqIdCounter);
@@ -1822,7 +1846,7 @@ function sendCmd(obj) {
         delete state.pendingReqs[id];
         reject(new Error('Timeout'));
       }
-    }, 30000);
+    }, timeoutMs || 30000);
     sendRaw(JSON.stringify(obj));
   });
 }
@@ -1886,6 +1910,96 @@ let fitMode = true;
 const _frameImg = new Image();
 let _framePendingUrl = null;
 let _lastCanvasW = 0, _lastCanvasH = 0;
+
+// ── H.264 WebCodecs decoder ──
+let _h264Decoder = null;
+let _h264Configured = false;
+let _h264Timestamp = 0;
+let _h264WaitingForKey = true;
+
+function initH264Decoder() {
+  if (_h264Decoder) return;
+  if (typeof VideoDecoder === 'undefined') {
+    console.warn('WebCodecs VideoDecoder not available — H.264 won\'t work, use JPEG');
+    return;
+  }
+  _h264Decoder = new VideoDecoder({
+    output: (frame) => {
+      const w = frame.displayWidth;
+      const h = frame.displayHeight;
+      if (_lastCanvasW !== w || _lastCanvasH !== h) {
+        canvas.width = w; canvas.height = h;
+        _lastCanvasW = w; _lastCanvasH = h;
+      }
+      ctx2d.drawImage(frame, 0, 0);
+      frame.close();
+      document.getElementById('no-stream').style.display = 'none';
+      document.getElementById('stream-stats').classList.remove('hidden');
+      document.getElementById('st-res').textContent = `${w}×${h}`;
+    },
+    error: (e) => {
+      console.error('H264 decode error:', e);
+      _h264WaitingForKey = true;
+    }
+  });
+  _h264Configured = false;
+  _h264WaitingForKey = true;
+  _h264Timestamp = 0;
+}
+
+function closeH264Decoder() {
+  if (_h264Decoder) {
+    try { _h264Decoder.close(); } catch(e){}
+    _h264Decoder = null;
+  }
+  _h264Configured = false;
+  _h264WaitingForKey = true;
+}
+
+function renderH264Frame(data, w, h, isKeyframe, totalBytes) {
+  state.frameCount++;
+  state.streamBytesThisSecond += totalBytes;
+
+  if (!_h264Decoder) initH264Decoder();
+  if (!_h264Decoder) return;  // WebCodecs not available
+
+  // Configure decoder on first keyframe
+  if (!_h264Configured && isKeyframe) {
+    try {
+      _h264Decoder.configure({
+        codec: 'avc1.42001f',  // Baseline Profile Level 3.1
+        codedWidth: w,
+        codedHeight: h,
+        optimizeForLatency: true
+      });
+      _h264Configured = true;
+      _h264WaitingForKey = false;
+    } catch(e) {
+      console.error('H264 configure error:', e);
+      return;
+    }
+  }
+
+  // Reconfigure if resolution changed
+  if (_h264Configured && _h264Decoder.state === 'configured') {
+    // Skip non-keyframes until we get a keyframe
+    if (_h264WaitingForKey && !isKeyframe) return;
+    if (isKeyframe) _h264WaitingForKey = false;
+
+    try {
+      const chunk = new EncodedVideoChunk({
+        type: isKeyframe ? 'key' : 'delta',
+        timestamp: _h264Timestamp,
+        data: data
+      });
+      _h264Timestamp += 1000000 / Math.max(1, state.fps || 30);  // microseconds
+      _h264Decoder.decode(chunk);
+    } catch(e) {
+      console.error('H264 decode chunk error:', e);
+      _h264WaitingForKey = true;
+    }
+  }
+}
 
 function renderFrame(jpegArr, w, h, totalBytes) {
   state.frameCount++;
@@ -2026,199 +2140,21 @@ document.getElementById('btn-stream-toggle').onclick = async () => {
   try { await startStream(); } finally { _streamStarting = false; }
 };
 
-// ── H.264 WebCodecs Decoder ───────────────────────────────────────
-// Uses VideoDecoder API which accepts raw Annex B NAL units directly.
-// This is the modern low-latency approach (no fMP4 muxing needed).
-let _h264Decoder = null;
-let _h264Ready = false;
-let _h264FrameTs = 0;
-let _h264PendingInit = false;
-let _h264Sps = null;        // Cached SPS for decoder config
-let _h264DecoderW = 0;
-let _h264DecoderH = 0;
-
-function initH264Decoder() {
-  if (_h264Ready || _h264PendingInit) return;
-  if (!('VideoDecoder' in window)) {
-    addLog('H.264: WebCodecs not supported — falling back to JPEG', 'WARN');
-    state.codec = 'jpeg';
-    const sel = document.getElementById('codec-select');
-    if (sel) sel.value = 'jpeg';
-    return;
-  }
-  _h264PendingInit = true;
-  // Decoder will be configured when first keyframe arrives (SPS/PPS needed)
-  _h264Ready = true;
-  _h264PendingInit = false;
-  addLog('H.264 WebCodecs decoder ready (waiting for keyframe)', 'OK');
-}
-
-function createH264DecoderInstance(w, h, spsData) {
-  if (_h264Decoder) {
-    try { _h264Decoder.close(); } catch(e) {}
-  }
-  _h264Decoder = new VideoDecoder({
-    output: (frame) => {
-      // Draw decoded frame to canvas
-      const vw = frame.displayWidth || frame.codedWidth;
-      const vh = frame.displayHeight || frame.codedHeight;
-      if (_lastCanvasW !== vw || _lastCanvasH !== vh) {
-        canvas.width = vw; canvas.height = vh;
-        _lastCanvasW = vw; _lastCanvasH = vh;
-      }
-      ctx2d.drawImage(frame, 0, 0);
-      frame.close();
-      document.getElementById('no-stream').style.display = 'none';
-      document.getElementById('stream-stats').classList.remove('hidden');
-      document.getElementById('st-res').textContent = `${vw}×${vh}`;
-    },
-    error: (e) => {
-      addLog('H.264 decode error: ' + e.message, 'ERR');
-    }
-  });
-  // Build avcC description from SPS if we have it
-  const config = {
-    codec: 'avc1.42E01E',  // Baseline profile, Level 3.0
-    codedWidth: w,
-    codedHeight: h,
-    optimizeForLatency: true,
-    hardwareAcceleration: 'prefer-hardware',
-  };
-  // Try to extract profile/level from SPS for correct codec string
-  if (spsData && spsData.length >= 4) {
-    const profile = spsData[1];
-    const compat  = spsData[2];
-    const level   = spsData[3];
-    config.codec = 'avc1.' + profile.toString(16).padStart(2,'0')
-                            + compat.toString(16).padStart(2,'0')
-                            + level.toString(16).padStart(2,'0');
-  }
-  try {
-    _h264Decoder.configure(config);
-    _h264DecoderW = w;
-    _h264DecoderH = h;
-    addLog('H.264 decoder configured: ' + config.codec + ' ' + w + 'x' + h, 'OK');
-  } catch(e) {
-    addLog('H.264 configure error: ' + e.message, 'ERR');
-    _h264Ready = false;
-  }
-}
-
-function destroyH264Decoder() {
-  _h264Ready = false;
-  _h264PendingInit = false;
-  _h264Sps = null;
-  _h264DecoderW = 0;
-  _h264DecoderH = 0;
-  _h264FrameTs = 0;
-  if (_h264Decoder) {
-    try { _h264Decoder.close(); } catch(e) {}
-    _h264Decoder = null;
-  }
-}
-
-// Parse Annex B stream to find NAL unit types
-function findNalUnits(data) {
-  const nals = [];
-  let i = 0;
-  while (i < data.length - 3) {
-    // Look for 00 00 01 or 00 00 00 01
-    if (data[i] === 0 && data[i+1] === 0) {
-      let startCodeLen = 0;
-      if (data[i+2] === 1) startCodeLen = 3;
-      else if (data[i+2] === 0 && i+3 < data.length && data[i+3] === 1) startCodeLen = 4;
-      if (startCodeLen > 0) {
-        const nalStart = i + startCodeLen;
-        if (nalStart < data.length) {
-          const nalType = data[nalStart] & 0x1F;
-          nals.push({ offset: i, nalStart, nalType, startCodeLen });
-        }
-        i = nalStart + 1;
-        continue;
-      }
-    }
-    i++;
-  }
-  return nals;
-}
-
-function feedH264Frame(data, w, h, isKeyframe) {
-  if (!_h264Ready) return;
-
-  const nalUnits = findNalUnits(data);
-
-  // Extract SPS (type 7) for decoder configuration
-  for (const nal of nalUnits) {
-    if (nal.nalType === 7) { // SPS
-      // Find end of this NAL unit
-      const idx = nalUnits.indexOf(nal);
-      const end = (idx + 1 < nalUnits.length) ? nalUnits[idx+1].offset : data.length;
-      _h264Sps = data.slice(nal.nalStart, end);
-      break;
-    }
-  }
-
-  // Configure decoder on first keyframe or resolution change
-  if (isKeyframe && (!_h264Decoder || _h264DecoderW !== w || _h264DecoderH !== h)) {
-    createH264DecoderInstance(w, h, _h264Sps);
-  }
-
-  if (!_h264Decoder || _h264Decoder.state !== 'configured') return;
-
-  // Decode: send the entire Annex B data as one EncodedVideoChunk
-  try {
-    const chunk = new EncodedVideoChunk({
-      type: isKeyframe ? 'key' : 'delta',
-      timestamp: _h264FrameTs,
-      data: data,
-    });
-    _h264FrameTs += 1000000 / Math.max(1, state.fps || 25); // microseconds
-    // Drop frames if decoder queue is full
-    if (_h264Decoder.decodeQueueSize < 5) {
-      _h264Decoder.decode(chunk);
-    }
-  } catch(e) {
-    // Ignore decode errors for non-keyframes (might happen after codec switch)
-  }
-}
-
 function parseScrnAndRender(buf) {
   const arr = new Uint8Array(buf);
-  if (arr.length < 12) return;
+  if (arr.length < 4) return;
   const sig = String.fromCharCode(arr[0], arr[1], arr[2], arr[3]);
-
-  if (sig === 'SCRN') {
-    // Legacy JPEG-only format: SCRN(4) + width(4) + height(4) + jpegData
+  if (sig === 'SCR2' && arr.length >= 14) {
+    const dv = new DataView(buf);
+    const codec = arr[4], flags = arr[5];
+    const w = dv.getUint32(6, true), h = dv.getUint32(10, true);
+    const data = new Uint8Array(buf, 14);
+    if (codec === 1) renderH264Frame(data, w, h, !!(flags & 1), buf.byteLength);
+    else renderFrame(data, w, h, buf.byteLength);
+  } else if (sig === 'SCRN' && arr.length >= 12) {
     const w = new DataView(buf).getUint32(4, true);
     const h = new DataView(buf).getUint32(8, true);
-    const jpeg = new Uint8Array(buf, 12);
-    renderFrame(jpeg, w, h, buf.byteLength);
-    return;
-  }
-
-  if (sig === 'SCR2') {
-    // New multi-codec format: SCR2(4) + codec(1) + flags(1) + width(4) + height(4) + data
-    if (arr.length < 14) return;
-    const codec = arr[4];     // 0=JPEG, 1=H264
-    const flags = arr[5];     // bit0 = keyframe
-    const dv = new DataView(buf);
-    const w = dv.getUint32(6, true);
-    const h = dv.getUint32(10, true);
-    const frameData = new Uint8Array(buf, 14);
-
-    state.frameCount++;
-    state.streamBytesThisSecond += buf.byteLength;
-
-    if (codec === 0) {
-      // JPEG in SCR2 envelope
-      renderFrame(frameData, w, h, buf.byteLength);
-    } else if (codec === 1) {
-      // H.264 Annex B NAL unit(s)
-      const isKey = (flags & 1) !== 0;
-      if (!_h264Ready) initH264Decoder();
-      if (_h264Ready) feedH264Frame(frameData, w, h, isKey);
-    }
-    return;
+    renderFrame(new Uint8Array(buf, 12), w, h, buf.byteLength);
   }
 }
 
@@ -2239,13 +2175,12 @@ async function startStream() {
   const defPort = (window.location.port && window.location.port !== '') ? window.location.port : (window.location.protocol === 'https:' ? '443' : '80');
   const port    = portEl || defPort;
   const ssl     = document.getElementById('in-ssl') ? document.getElementById('in-ssl').checked : false;
-  const proto   = ssl ? 'wss' : 'ws';
+  const pageIsHttps = window.location.protocol === 'https:';
+  const proto   = (ssl || pageIsHttps) ? 'wss' : 'ws';
   const token   = document.getElementById('in-token').value.trim();
   const pass    = document.getElementById('in-pass') ? document.getElementById('in-pass').value : '';
-  // Smart stream WS URL:
-  // HTTPS pages → go through nginx (wss://host/client) for SSL termination
-  // HTTP pages  → connect directly to server:port (ws://server:port/client)
-  const pageIsHttps = window.location.protocol === 'https:';
+  // If HTTPS page → connect through nginx (wss needs SSL termination)
+  // If HTTP page → connect directly to server:port
   const streamUrl = pageIsHttps
     ? `wss://${window.location.host}/client`
     : `${proto}://${server}:${port}/client`;
@@ -2350,6 +2285,7 @@ async function startStream() {
 async function stopStream() {
   state.streaming = false;
   state.streamOverWebRTC = false;
+  closeH264Decoder();
   if (state.streamDc) { state.streamDc.close(); state.streamDc = null; }
   if (state.streamPc) { state.streamPc.close(); state.streamPc = null; }
   if (state.streamWs) { try { state.streamWs.close(); } catch(e){} state.streamWs = null; }
@@ -2358,12 +2294,17 @@ async function stopStream() {
   document.getElementById('btn-stream-toggle').classList.remove('active');
   document.getElementById('no-stream').style.display = 'flex';
   document.getElementById('stream-stats').classList.add('hidden');
-  destroyH264Decoder();
   try { await sendCmd({ cmd:'stream_stop' }); } catch(e) {}
 }
 
 function sendStreamSettings() {
   if (state.streaming) sendCmd({ cmd:'stream_settings', codec: state.codec, quality: state.quality, fps: state.fps, scale: state.scale });
+}
+function changeCodec(val) {
+  state.codec = val;
+  document.getElementById('d-codec').textContent = 'Codec: ' + val;
+  sendStreamSettings();
+  notify('Codec: ' + val.toUpperCase(), 'info', 1500);
 }
 
 function adjustQuality(delta) {
@@ -2398,17 +2339,6 @@ function toggleCompressed(on) {
   document.getElementById('stream-compressed').checked = on;
   sendStreamSettings();
   notify(on ? 'Compressed (40%, 50% scale)' : 'Normal', 'info', 1500);
-}
-function changeCodec(codec) {
-  state.codec = codec;
-  document.getElementById('d-codec').textContent = 'Codec: ' + codec;
-  if (codec === 'h264') {
-    initH264Decoder();
-  } else {
-    destroyH264Decoder();
-  }
-  sendStreamSettings();
-  notify('Codec: ' + codec.toUpperCase(), 'info', 1500);
 }
 function toggleFit() { fitMode = !fitMode; canvas.style.objectFit = fitMode ? 'contain' : 'fill'; }
 function takeScreenshot() {
@@ -2645,11 +2575,7 @@ async function newFolder() {
 function downloadFile(name) {
   const path = state.currentPath.replace(/\\+$/, '') + '\\' + name;
   notify(`Downloading: ${name}...`, 'info');
-  _transferStartTime = Date.now();
-  _transferBytesTotal = 0;
-  showCancelBtn(true);
-  _transferCancelled = false;
-  downloadFromHost(path, name).finally(() => showCancelBtn(false));
+  downloadFromHost(path, name);
 }
 
 function normPath(p) {
@@ -2662,17 +2588,26 @@ async function collectFilesToDownload(dirPath, prefix) {
   const baseWithSlash = base.endsWith('\\') ? base : base + '\\';
   let raw;
   try {
-    raw = await sendCmd({ cmd:'file_list', path: baseWithSlash });
-  } catch (e) { return []; }
-  if (raw == null) return [];
+    raw = await sendCmd({ cmd:'file_list', path: baseWithSlash }, 60000);
+  } catch (e) {
+    console.error('collectFilesToDownload: file_list failed for', baseWithSlash, e);
+    notify('Ошибка листинга: ' + baseWithSlash + ' — ' + (e.message || e), 'error');
+    return [];
+  }
+  if (raw == null) {
+    console.warn('collectFilesToDownload: null response for', baseWithSlash);
+    return [];
+  }
   const data = typeof raw === 'string' ? (function(){ try { return JSON.parse(raw); } catch(_){ return {}; } })() : raw;
   const items = data.items || (Array.isArray(data) ? data : []) || [];
+  if (items.length === 0) {
+    console.warn('collectFilesToDownload: 0 items for', baseWithSlash, 'raw:', JSON.stringify(data).substring(0, 200));
+  }
   const out = [];
   for (const item of items) {
     const name = item.name || item.fileName || '';
     if (!name || name === '.' || name === '..') continue;
     const fullPath = baseWithSlash + name;
-    // Use path separator '/' for proper folder structure in downloads
     const saveName = prefix ? prefix + '/' + name : name;
     if ((item.type || item.fileAttribute || '').toLowerCase() === 'dir' || item.isDir) {
       const sub = await collectFilesToDownload(fullPath, saveName);
@@ -2698,32 +2633,6 @@ function getSelectedFileNames() {
   });
   return names;
 }
-// ── Transfer helpers: speed, ETA, progress ──
-function formatSpeed(bytesPerSec) {
-  if (bytesPerSec >= 1048576) return (bytesPerSec / 1048576).toFixed(1) + ' MB/s';
-  if (bytesPerSec >= 1024) return (bytesPerSec / 1024).toFixed(0) + ' KB/s';
-  return bytesPerSec + ' B/s';
-}
-function formatETA(seconds) {
-  if (!isFinite(seconds) || seconds < 0) return '--:--';
-  if (seconds < 60) return seconds.toFixed(0) + 's';
-  if (seconds < 3600) return Math.floor(seconds/60) + 'm ' + (seconds%60).toFixed(0) + 's';
-  return Math.floor(seconds/3600) + 'h ' + Math.floor((seconds%3600)/60) + 'm';
-}
-
-// ── Transfer state ──
-let _transferCancelled = false;
-let _transferBytesTotal = 0;  // Total bytes transferred across all files
-let _transferStartTime = 0;
-function cancelTransfer() {
-  _transferCancelled = true;
-  notify('Cancelling...', 'warn', 1000);
-}
-function showCancelBtn(show) {
-  const btn = document.getElementById('btn-cancel-transfer');
-  if (btn) btn.style.display = show ? 'inline-block' : 'none';
-}
-
 async function downloadSelected() {
   const selectedNames = getSelectedFileNames();
   if (!selectedNames.length) {
@@ -2732,54 +2641,55 @@ async function downloadSelected() {
   }
   const base = normPath(state.currentPath) + '\\';
   const toDownload = [];
+  const status = document.getElementById('fm-status');
   for (const name of selectedNames) {
     const item = state.fileList.find(i => (i.name || '') === name);
     const path = base + name;
     if (!item || (item.type || '').toLowerCase() !== 'dir') {
-      toDownload.push({ path, saveName: name });
+      toDownload.push({ path, saveName: name, size: (item && item.size) || 0 });
     } else {
-      // Folder download: collect all files recursively with proper path structure
+      if (status) status.textContent = 'Сбор файлов из ' + name + '...';
       const files = await collectFilesToDownload(path, name);
       toDownload.push(...files);
     }
   }
-  if (!toDownload.length) { notify('Nothing to download', 'warn'); return; }
-  _transferCancelled = false;
-  _transferBytesTotal = 0;
-  _transferStartTime = Date.now();
-  showCancelBtn(true);
-  notify(`Downloading ${toDownload.length} file(s)...`, 'info');
+  if (!toDownload.length) { notify('Нет файлов для скачивания', 'warn'); return; }
+  const totalBytes = toDownload.reduce((s, f) => s + (f.size || 0), 0);
+  notify(`Скачивание ${toDownload.length} файл(ов) (${formatBytes(totalBytes)})...`, 'info');
   let ok = 0, fail = 0;
+  const batchStart = Date.now();
+  let batchDownloaded = 0;
+  _downloadCancelled = false;
   for (let i = 0; i < toDownload.length; i++) {
-    if (_transferCancelled) { notify('Download cancelled', 'warn'); break; }
-    const { path, saveName } = toDownload[i];
+    if (_downloadCancelled) break;
+    const { path, saveName, size } = toDownload[i];
     try {
       const flatName = saveName.replace(/[\/\\]/g, '_');
-      const elapsed = (Date.now() - _transferStartTime) / 1000;
-      const speed = elapsed > 0 ? _transferBytesTotal / elapsed : 0;
-      const eta = (ok > 0 && i > 0) ? formatETA(elapsed / i * (toDownload.length - i)) : '--:--';
-      document.getElementById('fm-status').textContent =
-        `⬇ ${i+1}/${toDownload.length}: ${flatName} | ${formatSpeed(speed)} | ETA: ${eta} | Done: ${formatBytes(_transferBytesTotal)}`;
-      await downloadFromHost(path, flatName, true);
+      await downloadFromHost(path, flatName, { silent: true, fileIndex: i, totalFiles: toDownload.length });
       ok++;
-    } catch (e) { fail++; notify('Failed: ' + saveName, 'error'); }
-    if (i < toDownload.length - 1) await new Promise(r => setTimeout(r, 100));
+      batchDownloaded += (size || 0);
+      const elapsed = (Date.now() - batchStart) / 1000;
+      const speed = elapsed > 0.1 ? batchDownloaded / elapsed : 0;
+      if (status) status.textContent = `✓ ${ok}/${toDownload.length} — ${flatName} (${formatBytes(size)}) — ${formatSpeed(speed)}`;
+    } catch (e) {
+      if (_downloadCancelled) break;
+      fail++; notify('Ошибка: ' + saveName + ' — ' + (e.message || e), 'error');
+    }
   }
-  showCancelBtn(false);
   selectedNames.forEach(function(n) { state.selectedFiles.delete(n); });
   document.querySelectorAll('.fm-cb').forEach(cb => { cb.checked = false; });
-  const statusMsg = _transferCancelled
-    ? `Download cancelled. ${ok}/${toDownload.length} done`
-    : `Downloaded ${ok}/${toDownload.length} file(s)` + (fail ? `, ${fail} failed` : '');
-  notify(statusMsg, fail || _transferCancelled ? 'warn' : 'success');
-  document.getElementById('fm-status').textContent = statusMsg;
+  const elapsed = ((Date.now() - batchStart) / 1000).toFixed(1);
+  const avgSpeed = elapsed > 0 ? batchDownloaded / parseFloat(elapsed) : 0;
+  const statusMsg = `Скачано ${ok}/${toDownload.length} файл(ов), ${formatBytes(batchDownloaded)} за ${elapsed}s (${formatSpeed(avgSpeed)})` + (fail ? `, ошибок: ${fail}` : '');
+  notify(statusMsg, fail ? 'warn' : 'success');
+  if (status) status.textContent = statusMsg;
 }
 
 // Collect all file paths to copy (recursive for folders). fromBase = source dir with \; destBase = destination dir with \
 async function collectFilesToCopy(dirPath, destBase, fromBase, list) {
   const baseWithSlash = normPath(dirPath) + (dirPath.endsWith('\\') ? '' : '\\');
   let raw;
-  try { raw = await sendCmd({ cmd: 'file_list', path: baseWithSlash }); } catch (e) { return; }
+  try { raw = await sendCmd({ cmd: 'file_list', path: baseWithSlash }, 60000); } catch (e) { console.error('collectFilesToCopy failed:', baseWithSlash, e); return; }
   const data = typeof raw === 'string' ? (function(){ try { return JSON.parse(raw); } catch(_){ return {}; } })() : raw;
   const items = data.items || (Array.isArray(data) ? data : []) || [];
   for (const item of items) {
@@ -2805,7 +2715,6 @@ async function copySelected() {
   const destBase = normPath(dest) + (dest.endsWith('\\') ? '' : '\\');
   const base = normPath(state.currentPath) + '\\';
   const toCopy = [];
-  document.getElementById('fm-status').textContent = 'Scanning files...';
   for (const name of selectedNames) {
     const item = state.fileList.find(i => (i.name || '').trim() === (name || '').trim());
     const from = base + name;
@@ -2818,128 +2727,188 @@ async function copySelected() {
     }
   }
   if (!toCopy.length) { notify('Nothing to copy', 'warn'); return; }
-  _transferCancelled = false;
-  showCancelBtn(true);
-  const bar = document.getElementById('fm-progress');
+  const cancelBtn = document.getElementById('fm-cancel-btn');
+  const status = document.getElementById('fm-status');
+  _downloadCancelled = false;
+  if (cancelBtn) cancelBtn.style.display = 'inline-block';
   notify(`Copying ${toCopy.length} item(s)...`, 'info');
   let ok = 0, fail = 0;
-  const total = toCopy.length;
   const copyStart = Date.now();
-  for (let i = 0; i < total; i++) {
-    if (_transferCancelled) { notify('Copy cancelled', 'warn'); break; }
+  for (let i = 0; i < toCopy.length; i++) {
+    if (_downloadCancelled) break;
     const { from, to } = toCopy[i];
-    const fname = from.split('\\').pop() || from;
-    const elapsed = (Date.now() - copyStart) / 1000;
-    const filesPerSec = i > 0 ? i / elapsed : 0;
-    const eta = filesPerSec > 0 ? formatETA((total - i) / filesPerSec) : '--:--';
-    document.getElementById('fm-status').textContent =
-      `📋 ${i+1}/${total}: ${fname} | ${filesPerSec.toFixed(1)} files/s | ETA: ${eta}`;
-    if (bar) bar.style.width = ((i+1)/total*100).toFixed(1) + '%';
+    const fname = from.split('\\').pop();
+    if (status) status.textContent = `[${i+1}/${toCopy.length}] ${fname}`;
     try {
       await sendCmd({ cmd: 'file_copy', from, to });
       ok++;
-    } catch (e) { fail++; }
+    } catch (e) { if (_downloadCancelled) break; fail++; }
   }
-  showCancelBtn(false);
-  if (bar) bar.style.width = '0%';
+  if (cancelBtn) cancelBtn.style.display = 'none';
   selectedNames.forEach(function(n) { state.selectedFiles.delete(n); });
   document.querySelectorAll('.fm-cb').forEach(cb => { cb.checked = false; });
-  const statusMsg = _transferCancelled
-    ? `Copy cancelled. ${ok}/${total} done`
-    : `Copied ${ok}/${total}` + (fail ? `, ${fail} failed` : '');
-  notify(statusMsg, fail || _transferCancelled ? 'warn' : 'success');
-  document.getElementById('fm-status').textContent = statusMsg;
+  const elapsed = ((Date.now() - copyStart) / 1000).toFixed(1);
+  const msg = _downloadCancelled
+    ? `Copy cancelled: ${ok}/${toCopy.length} copied`
+    : `Copied ${ok}/${toCopy.length} in ${elapsed}s` + (fail ? `, errors: ${fail}` : '');
+  notify(msg, (fail || _downloadCancelled) ? 'warn' : 'success');
+  if (status) status.textContent = msg;
   refreshFiles();
 }
 
-async function downloadFromHost(path, filename, silent) {
-  const CHUNK = 524288; // 512KB chunks (was 64KB - too small for large files)
-  let offset = 0;
-  const chunks = [];
+async function downloadFromHost(path, filename, optsOrSilent) {
+  // Backward compat: accept boolean or opts object
+  let opts = {};
+  if (typeof optsOrSilent === 'boolean') opts = { silent: optsOrSilent };
+  else if (typeof optsOrSilent === 'object' && optsOrSilent) opts = optsOrSilent;
+  const silent = opts.silent || false;
+  const fileIndex = opts.fileIndex || 0;
+  const totalFiles = opts.totalFiles || 1;
+
+  const CHUNK = 2097152; // 2MB chunks for higher throughput
+  const PIPELINE = 10;   // 10 in-flight requests for maximum throughput
+  const CHUNK_TIMEOUT = 60000; // 60s per chunk
+  const MAX_RETRIES = 3;
   let bar = document.getElementById('fm-progress');
+  const status = document.getElementById('fm-status');
+  const cancelBtn = document.getElementById('fm-cancel-btn');
+  _downloadCancelled = false;
+  if (cancelBtn) cancelBtn.style.display = 'inline-block';
   path = normPath(path);
   if (!path) return;
 
   let totalSize = 0;
   try {
-    const info = await sendCmd({ cmd:'file_info', path });
+    const info = await sendCmd({ cmd:'file_info', path }, 15000);
     if (info != null) {
       if (typeof info === 'object' && 'size' in info) totalSize = Number(info.size) || 0;
       else if (typeof info === 'string') { try { const o = JSON.parse(info); totalSize = (o && typeof o.size === 'number') ? o.size : 0; } catch(_) {} }
     }
   } catch {}
 
-  const MAX_RETRIES = 3;
-  let consecutiveErrors = 0;
+  const filePrefix = totalFiles > 1 ? `[${fileIndex+1}/${totalFiles}] ` : '';
+  const chunks = [];
+  let receivedBytes = 0;
+  let nextSendOffset = 0;
+  let error = null;
+  const startTime = Date.now();
+  let lastProgressUpdate = 0;
 
-  while (true) {
-    if (_transferCancelled) break;
-    let chunkData = null;
-    let lastErr = null;
-
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-      try {
-        chunkData = await new Promise((resolve, reject) => {
-          state.pendingFileChunkResolve = { resolve, reject };
-          sendRaw(JSON.stringify({ cmd:'file_read_chunk', path: path, offset: offset, length: CHUNK }));
-          const timeoutId = setTimeout(() => {
-            if (state.pendingFileChunkResolve) {
-              state.pendingFileChunkResolve = null;
-              reject(new Error('Timeout'));
-            }
-          }, 60000); // 60s timeout per chunk
-          // Store timeout ID so we can clear it on success
-          const origResolve = state.pendingFileChunkResolve.resolve;
-          state.pendingFileChunkResolve.resolve = (data) => {
-            clearTimeout(timeoutId);
-            origResolve(data);
-          };
-        });
-        break; // Success - exit retry loop
-      } catch (e) {
-        lastErr = e;
-        if (attempt < MAX_RETRIES - 1) {
-          await new Promise(r => setTimeout(r, 500 * (attempt + 1))); // Backoff
+  // Map-based chunk request: each chunk is keyed by offset for reliable matching
+  function requestChunk(offset) {
+    return new Promise((resolve, reject) => {
+      const key = String(offset);
+      const timeoutId = setTimeout(() => {
+        if (state.pendingFileChunkMap[key]) {
+          delete state.pendingFileChunkMap[key];
+          reject(new Error('Chunk timeout at offset ' + offset));
         }
-      }
-    }
-
-    if (!chunkData || chunkData.byteLength === 0) {
-      // If we got 0 bytes but expected more (based on totalSize), it's an error
-      if (totalSize > 0 && offset < totalSize && consecutiveErrors < 2) {
-        consecutiveErrors++;
-        // Try again for this offset
-        continue;
-      }
-      break; // Real EOF or too many errors
-    }
-
-    consecutiveErrors = 0;
-    chunks.push(new Uint8Array(chunkData));
-    offset += chunkData.byteLength;
-    _transferBytesTotal += chunkData.byteLength;
-    if (totalSize > 0) {
-      const pct = Math.min(100, (offset/totalSize*100));
-      bar.style.width = pct.toFixed(1)+'%';
-      // Always show per-file progress with speed and ETA
-      const elapsed = (Date.now() - _transferStartTime) / 1000;
-      const speed = elapsed > 0 ? _transferBytesTotal / elapsed : 0;
-      const remainBytes = totalSize - offset;
-      const fileEta = speed > 0 ? formatETA(remainBytes / speed) : '--:--';
-      const status = document.getElementById('fm-status');
-      if (status) status.textContent =
-        `⬇ ${filename}: ${formatBytes(offset)}/${formatBytes(totalSize)} (${pct.toFixed(0)}%) | ${formatSpeed(speed)} | ETA: ${fileEta}`;
-    }
-    if (chunkData.byteLength < CHUNK) break; // Last chunk
+      }, CHUNK_TIMEOUT);
+      state.pendingFileChunkMap[key] = { resolve, reject, timeoutId };
+      sendRaw(JSON.stringify({ cmd:'file_read_chunk', path, offset, length: CHUNK }));
+    });
   }
 
-  bar.style.width = '0%';
+  // Request chunk with retries
+  async function requestChunkWithRetry(offset) {
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        return await requestChunk(offset);
+      } catch (e) {
+        if (attempt === MAX_RETRIES) throw e;
+        console.warn(`Chunk retry ${attempt}/${MAX_RETRIES} at offset ${offset}: ${e.message}`);
+        await new Promise(r => setTimeout(r, 500 * attempt)); // backoff
+      }
+    }
+  }
 
-  // Validate downloaded size
+  // Update progress display — always show, even in silent mode
+  function updateProgress() {
+    const now = Date.now();
+    if (now - lastProgressUpdate < 100 && receivedBytes < totalSize) return;
+    lastProgressUpdate = now;
+    if (totalSize > 0) {
+      const pct = Math.min(100, (receivedBytes / totalSize * 100));
+      bar.style.width = pct.toFixed(1) + '%';
+      const elapsed = (now - startTime) / 1000;
+      const speed = elapsed > 0.1 ? receivedBytes / elapsed : 0;
+      const remaining = speed > 0 ? (totalSize - receivedBytes) / speed : 0;
+      if (status) status.textContent =
+        `${filePrefix}⬇ ${filename}: ${formatBytes(receivedBytes)} / ${formatBytes(totalSize)} (${pct.toFixed(0)}%) — ${formatSpeed(speed)}, ETA ${formatETA(remaining)}`;
+    } else {
+      if (status) status.textContent =
+        `${filePrefix}⬇ ${filename}: ${formatBytes(receivedBytes)}...`;
+    }
+  }
+
+  // Pipeline loop: keep PIPELINE requests in flight
+  const inflight = [];
+  const maxOffset = totalSize > 0 ? totalSize : Number.MAX_SAFE_INTEGER;
+  for (let i = 0; i < PIPELINE && nextSendOffset < maxOffset; i++) {
+    inflight.push({ offset: nextSendOffset, promise: requestChunkWithRetry(nextSendOffset) });
+    nextSendOffset += CHUNK;
+  }
+
+  while (inflight.length > 0) {
+    if (_downloadCancelled) { error = new Error('Cancelled'); break; }
+    const current = inflight.shift();
+    let chunkData = null;
+    try {
+      chunkData = await current.promise;
+    } catch (e) {
+      if (_downloadCancelled) { error = new Error('Cancelled'); break; }
+      error = e;
+      console.error('Download chunk error:', e.message);
+      break;
+    }
+
+    if (_downloadCancelled) { error = new Error('Cancelled'); break; }
+
+    if (!chunkData || chunkData.byteLength === 0) {
+      if (totalSize > 0 && receivedBytes < totalSize * 0.95) {
+        try { chunkData = await requestChunkWithRetry(current.offset); } catch(_) {}
+      }
+      if (!chunkData || chunkData.byteLength === 0) break;
+    }
+
+    chunks.push(new Uint8Array(chunkData));
+    receivedBytes += chunkData.byteLength;
+    updateProgress();
+
+    if (chunkData.byteLength < CHUNK) {
+      for (const rem of inflight) {
+        if (_downloadCancelled) break;
+        try { const d = await rem.promise; if (d && d.byteLength > 0) { chunks.push(new Uint8Array(d)); receivedBytes += d.byteLength; } } catch(_) {}
+      }
+      inflight.length = 0;
+      break;
+    }
+
+    if (nextSendOffset < maxOffset) {
+      inflight.push({ offset: nextSendOffset, promise: requestChunkWithRetry(nextSendOffset) });
+      nextSendOffset += CHUNK;
+    }
+  }
+
+  // Clear remaining pending (safety)
+  Object.values(state.pendingFileChunkMap).forEach(p => { if (p.timeoutId) clearTimeout(p.timeoutId); });
+  state.pendingFileChunkMap = {};
+
+  bar.style.width = '0%';
+  if (cancelBtn) cancelBtn.style.display = 'none';
+
+  // Final stats
   const total = chunks.reduce((a, c) => a + c.length, 0);
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  const avgSpeed = elapsed > 0 ? total / parseFloat(elapsed) : 0;
+
+  if (error) {
+    notify(`${filePrefix}${filename} — ошибка: ${error.message}`, 'error');
+    throw error;
+  }
+
   if (totalSize > 0 && total < totalSize * 0.95) {
-    // Downloaded significantly less than expected
-    notify(`Warning: ${filename} — expected ${formatBytes(totalSize)}, got ${formatBytes(total)}`, 'warn');
+    notify(`${filePrefix}${filename} — ${formatBytes(totalSize)} ожидалось, ${formatBytes(total)} получено`, 'warn');
   }
 
   const merged = new Uint8Array(total);
@@ -2947,12 +2916,13 @@ async function downloadFromHost(path, filename, silent) {
   chunks.forEach(c => { merged.set(c, pos); pos += c.length; });
 
   const blob = new Blob([merged]);
+  const doneMsg = `${filePrefix}${filename} (${formatBytes(total)}) — ${elapsed}s, ${formatSpeed(avgSpeed)}`;
   const saveViaLink = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = filename; a.click();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
-    if (!silent) notify(`Downloaded: ${filename} (${formatBytes(total)})`, 'success');
+    if (!silent) notify(doneMsg, 'success');
   };
   if (state.downloadDirHandle && typeof state.downloadDirHandle.getFileHandle === 'function') {
     try {
@@ -2960,9 +2930,9 @@ async function downloadFromHost(path, filename, silent) {
       const w = await handle.createWritable();
       await w.write(blob);
       await w.close();
-      if (!silent) notify(`Saved to folder "${state.downloadDirHandle.name}": ${filename} (${formatBytes(total)})`, 'success');
+      if (!silent) notify(`→ "${state.downloadDirHandle.name}": ${doneMsg}`, 'success');
     } catch (e) {
-      if (!silent) notify('Save to folder failed: ' + (e.message || e) + ' — using download', 'warn');
+      if (!silent) notify('Save to folder failed: ' + (e.message || e), 'warn');
       saveViaLink();
     }
   } else if (typeof window.showSaveFilePicker === 'function' && window.isSecureContext && !silent) {
@@ -2971,17 +2941,38 @@ async function downloadFromHost(path, filename, silent) {
       const w = await handle.createWritable();
       await w.write(blob);
       await w.close();
-      notify('Saved: ' + handle.name + ' (' + formatBytes(total) + ')', 'success');
+      notify(handle.name + ' — ' + doneMsg, 'success');
     } catch (e) {
       if (e.name !== 'AbortError') saveViaLink();
     }
   } else {
     saveViaLink();
   }
+  // Show completion briefly
+  if (status) status.textContent = `✓ ${doneMsg}`;
 }
 
 // Binary file chunk handler (override in state)
 let pendingFileChunks = {};
+let _downloadCancelled = false;
+
+function cancelDownload() {
+  _downloadCancelled = true;
+  // Clear all pending chunk requests
+  Object.values(state.pendingFileChunkMap).forEach(p => {
+    if (p.timeoutId) clearTimeout(p.timeoutId);
+    p.reject(new Error('Download cancelled'));
+  });
+  state.pendingFileChunkMap = {};
+  const bar = document.getElementById('fm-progress');
+  const status = document.getElementById('fm-status');
+  const cancelBtn = document.getElementById('fm-cancel-btn');
+  if (bar) bar.style.width = '0%';
+  if (status) status.textContent = 'Скачивание отменено';
+  if (cancelBtn) cancelBtn.style.display = 'none';
+  notify('Скачивание отменено', 'warn');
+}
+
 function handleFileChunk(buf) {
   const dv = new DataView(buf);
   const plen = dv.getUint16(4, true);
@@ -3003,20 +2994,23 @@ async function handleUpload(input) {
   const files = Array.from(input.files);
   if (!files.length) return;
   const bar = document.getElementById('fm-progress');
-  
+  const status = document.getElementById('fm-status');
+
   for (const file of files) {
-    notify(`Uploading: ${file.name}`, 'info');
+    notify(`Uploading: ${file.name} (${formatBytes(file.size)})`, 'info');
     const path = state.currentPath + '\\' + file.name;
-    const CHUNK = 65536;
+    const CHUNK = 524288; // 512KB chunks (was 64KB)
     let offset = 0;
     const reader = new FileReader();
-    
+    const startTime = Date.now();
+    let lastProgressUpdate = 0;
+
     while (offset < file.size) {
       const slice = file.slice(offset, offset + CHUNK);
       const arrBuf = await new Promise(r => { reader.onload = e => r(e.target.result); reader.readAsArrayBuffer(slice); });
       const arr = new Uint8Array(arrBuf);
       const last = (offset + arr.length) >= file.size;
-      
+
       // Build WCHK message
       const pathBytes = new TextEncoder().encode(path);
       const msg = new Uint8Array(4 + 1 + 2 + pathBytes.length + 8 + arr.length);
@@ -3028,14 +3022,28 @@ async function handleUpload(input) {
       dv.setBigUint64(7 + pathBytes.length, BigInt(offset), true);
       msg.set(arr, 7 + pathBytes.length + 8);
       sendRaw(msg.buffer);
-      
+
       offset += arr.length;
-      bar.style.width = Math.min(100, (offset/file.size*100)).toFixed(1)+'%';
-      await new Promise(r => setTimeout(r, 5));
+      const now = Date.now();
+      if (now - lastProgressUpdate > 150 || last) {
+        lastProgressUpdate = now;
+        const pct = Math.min(100, (offset / file.size * 100));
+        bar.style.width = pct.toFixed(1) + '%';
+        const elapsed = (now - startTime) / 1000;
+        const speed = elapsed > 0.1 ? offset / elapsed : 0;
+        const remaining = speed > 0 ? (file.size - offset) / speed : 0;
+        if (status) status.textContent =
+          `\u2191 ${file.name}: ${formatBytes(offset)} / ${formatBytes(file.size)} (${pct.toFixed(0)}%) \u2014 ${formatSpeed(speed)}, ETA ${formatETA(remaining)}`;
+      }
+      // Yield to event loop every 2MB to avoid blocking UI
+      if (offset % (CHUNK * 4) === 0) await new Promise(r => setTimeout(r, 0));
     }
     bar.style.width = '0%';
-    notify(`Uploaded: ${file.name}`, 'success');
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const avgSpeed = elapsed > 0 ? file.size / parseFloat(elapsed) : 0;
+    notify(`\u2191 ${file.name} (${formatBytes(file.size)}) \u2014 ${elapsed}s, ${formatSpeed(avgSpeed)}`, 'success');
   }
+  if (status) status.textContent = '';
   input.value = '';
   refreshFiles();
 }
@@ -3079,20 +3087,31 @@ function showFileContextMenu(e, item) {
     const sep = document.createElement('div'); sep.className = 'ctx-sep'; menu.appendChild(sep);
   } else {
     add('Download folder', '⬇', async () => {
-      notify('Collecting files in ' + item.name + '...', 'info');
+      const fmStatus = document.getElementById('fm-status');
+      if (fmStatus) fmStatus.textContent = 'Сбор файлов из ' + item.name + '...';
+      notify('Сбор файлов из ' + item.name + '...', 'info');
       const files = await collectFilesToDownload(path, item.name);
-      if (!files.length) { notify('Folder is empty', 'warn'); return; }
-      notify(`Downloading ${files.length} file(s) from ${item.name}...`, 'info');
-      let ok = 0;
+      if (!files.length) { notify('Папка пуста или ошибка листинга', 'warn'); return; }
+      const totalBytes = files.reduce((s, f) => s + (f.size || 0), 0);
+      notify(`Скачивание ${files.length} файл(ов) из ${item.name} (${formatBytes(totalBytes)})...`, 'info');
+      let ok = 0, fail = 0;
+      const batchStart = Date.now();
+      let batchDownloaded = 0;
+      _downloadCancelled = false;
       for (let i = 0; i < files.length; i++) {
+        if (_downloadCancelled) break;
         try {
           const flatName = files[i].saveName.replace(/[\/\\]/g, '_');
-          await downloadFromHost(files[i].path, flatName, true);
+          await downloadFromHost(files[i].path, flatName, { silent: true, fileIndex: i, totalFiles: files.length });
           ok++;
-        } catch(e) {}
-        if (i < files.length - 1) await new Promise(r => setTimeout(r, 100));
+          batchDownloaded += (files[i].size || 0);
+        } catch(e) { if (_downloadCancelled) break; fail++; }
       }
-      notify(`Downloaded ${ok}/${files.length} files from ${item.name}`, ok === files.length ? 'success' : 'warn');
+      const elapsed = ((Date.now() - batchStart) / 1000).toFixed(1);
+      const avgSpeed = elapsed > 0 ? batchDownloaded / parseFloat(elapsed) : 0;
+      const msg = `${item.name}: ${ok}/${files.length} файлов, ${formatBytes(batchDownloaded)} за ${elapsed}s (${formatSpeed(avgSpeed)})` + (fail ? `, ошибок: ${fail}` : '');
+      notify(msg, ok === files.length ? 'success' : 'warn');
+      if (fmStatus) fmStatus.textContent = msg;
     });
     add('Open', '📂', () => navigateTo(path));
     const sep = document.createElement('div'); sep.className = 'ctx-sep'; menu.appendChild(sep);
@@ -3455,6 +3474,17 @@ function formatBytes(b) {
   if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
   if (b < 1073741824) return (b/1048576).toFixed(1) + ' MB';
   return (b/1073741824).toFixed(2) + ' GB';
+}
+function formatSpeed(bytesPerSec) {
+  if (bytesPerSec <= 0) return '-- MB/s';
+  if (bytesPerSec < 1048576) return (bytesPerSec/1024).toFixed(0) + ' KB/s';
+  return (bytesPerSec/1048576).toFixed(1) + ' MB/s';
+}
+function formatETA(seconds) {
+  if (!seconds || seconds <= 0 || !isFinite(seconds)) return '--:--';
+  seconds = Math.ceil(seconds);
+  if (seconds > 3600) return Math.floor(seconds/3600) + ':' + String(Math.floor((seconds%3600)/60)).padStart(2,'0') + ':' + String(seconds%60).padStart(2,'0');
+  return Math.floor(seconds/60) + ':' + String(seconds%60).padStart(2,'0');
 }
 
 function getFileIcon(name) {

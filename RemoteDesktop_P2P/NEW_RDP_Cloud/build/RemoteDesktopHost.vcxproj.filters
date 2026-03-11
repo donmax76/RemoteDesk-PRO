@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="D:\Android_Projects\TestApp\RemoteDesktop_P2P\NEW_RDP_Cloud\.claude\worktrees\clever-chaum\RemoteDesktop_P2P\NEW_RDP_Cloud\main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="D:\Android_Projects\TestApp\RemoteDesktop_P2P\NEW_RDP_Cloud\.claude\worktrees\clever-chaum\RemoteDesktop_P2P\NEW_RDP_Cloud\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{18AAAC82-D28A-3758-AD86-AB3F71AE5D51}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

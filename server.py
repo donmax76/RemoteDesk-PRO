@@ -14,7 +14,6 @@ import time
 import ssl
 import os
 import base64
-import socket
 from typing import Dict, Optional, Set
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -232,8 +231,8 @@ PORT = int(os.environ.get("RDP_PORT", "8080"))
 ADMIN_TOKEN = os.environ.get("RDP_ADMIN_TOKEN", "change-me-admin-token")
 MAX_ROOMS = int(os.environ.get("RDP_MAX_ROOMS", "100"))
 MAX_CLIENTS_PER_ROOM = int(os.environ.get("RDP_MAX_CLIENTS", "10"))
-PING_INTERVAL = 2    # Very frequent pings — prevent NIC power-save (like TeamViewer traffic)
-PING_TIMEOUT = 120
+PING_INTERVAL = 25
+PING_TIMEOUT = 60
 SSL_CERT = os.environ.get("RDP_SSL_CERT", "")
 SSL_KEY  = os.environ.get("RDP_SSL_KEY", "")
 
@@ -241,7 +240,7 @@ SSL_KEY  = os.environ.get("RDP_SSL_KEY", "")
 @dataclass
 class Connection:
     ws: object
-    role: str           # "host" | "client" | "stream"
+    role: str           # "host" | "client" | "stream" | "host_stream"
     token: str
     user_id: str = ""
     remote: str = ""
@@ -256,8 +255,8 @@ class Room:
     password_hash: str
     host: Optional[Connection] = None
     clients: Dict[str, Connection] = field(default_factory=dict)
-    stream_clients: Dict[str, Connection] = field(default_factory=dict)  # SCRN-only connections (client→receive)
-    host_streams: Dict[str, Connection] = field(default_factory=dict)  # Host stream senders (host→send SCRN)
+    stream_clients: Dict[str, Connection] = field(default_factory=dict)  # SCRN-only connections
+    host_streams: Dict[str, Connection] = field(default_factory=dict)  # host_stream connections (SCRN senders)
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     frame_count: int = 0
@@ -328,20 +327,10 @@ async def cleanup_empty_rooms():
 async def handler(websocket, path: str):
     remote = websocket.remote_address
     log.info(f"New connection from {remote} path={path}")
-
-    # ── TCP buffer optimization: large buffers + no-delay for throughput ──
-    try:
-        sock = websocket.transport.get_extra_info("socket")
-        if sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2 * 1024 * 1024)  # 2MB send
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2 * 1024 * 1024)  # 2MB recv
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)              # No Nagle
-    except Exception:
-        pass
-
+    
     conn: Optional[Connection] = None
     room: Optional[Room] = None
-
+    
     try:
         # ── Auth phase ─────────────────────────────────────────────────────
         try:
@@ -377,22 +366,15 @@ async def handler(websocket, path: str):
         except ValueError as e:
             await websocket.send(make_error(str(e)))
             return
-        
-        # Password check for clients and stream connections
-        if role in ("client", "stream"):
+
+        # Password check for clients, stream, and host_stream connections
+        if role in ("client", "stream", "host_stream"):
             if not check_password(password, room.password_hash):
                 await websocket.send(make_error("Wrong password"))
                 log.warning(f"Auth failed from {remote} (wrong password)")
                 return
             if role == "client" and room.is_full():
                 await websocket.send(make_error("Room full"))
-                return
-
-        # host_stream uses same password as host (already set when host connected)
-        if role == "host_stream":
-            if not check_password(password, room.password_hash):
-                await websocket.send(make_error("Wrong password"))
-                log.warning(f"Auth failed from {remote} (host_stream wrong password)")
                 return
         
         # Register connection
@@ -457,17 +439,14 @@ async def handler(websocket, path: str):
                         room.host.bytes_sent += len(raw_msg)
                     except:
                         log.warning(f"Failed to forward binary to host")
-                elif role == "host_stream":
-                    # host_stream ONLY sends SCRN/SCR2 frames → route to stream clients
+                elif role == "host" or role == "host_stream":
                     if len(raw_msg) >= 4 and raw_msg[:4] in (b'SCRN', b'SCR2'):
-                        enqueue_scrn_to_stream_clients(room, raw_msg)
-                elif role == "host":
-                    if len(raw_msg) >= 4 and raw_msg[:4] in (b'SCRN', b'SCR2'):
-                        # SCRN frames → ONLY to stream_clients, NOT to command clients
+                        # SCRN/SCR2 frames → ONLY to stream_clients, NOT to command clients
                         # Fire-and-forget: never blocks the host handler
                         enqueue_scrn_to_stream_clients(room, raw_msg)
-                    else:
+                    elif role == "host":
                         # FILE chunks → route to specific client if we have a pending target
+                        # (host_stream only sends SCRN, never FILE chunks)
                         target = room._pending_binary_target
                         room._pending_binary_target = ""
                         if target and target in room.clients:
@@ -484,7 +463,7 @@ async def handler(websocket, path: str):
                 # Text JSON: route by role
                 conn.bytes_recv += len(raw_msg.encode())
                 if role in ("stream", "host_stream"):
-                    continue  # stream/host_stream: binary-only, ignore text
+                    continue  # stream and host_stream connections are binary-only
                 try:
                     msg = json.loads(raw_msg)
                 except:
@@ -533,6 +512,7 @@ async def handler(websocket, path: str):
                     log.info(f"Host disconnected: token={token[:8]}...")
                 elif conn.role == "host_stream":
                     room.host_streams.pop(conn.user_id, None)
+                    log.info(f"Host stream disconnected: id={conn.user_id}")
                 elif conn.role == "client":
                     room.clients.pop(conn.user_id, None)
                 elif conn.role == "stream":
@@ -699,7 +679,7 @@ async def main():
         ping_interval=PING_INTERVAL,
         ping_timeout=PING_TIMEOUT,
         max_size=50 * 1024 * 1024,
-        write_limit=2 * 1024 * 1024,  # 2MB write buffer for large file chunks and SCRN frames
+        write_limit=256 * 1024,  # 256KB write buffer for large SCRN frames
         compression=None,
         process_request=_fix_connection_header,
     )

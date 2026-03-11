@@ -37,10 +37,6 @@ public:
         int src_width = 0, src_height = 0;
         int src_stride = 0;
         int target_width = 0, target_height = 0;
-        // Dirty rectangles from DXGI (changed regions)
-        struct DirtyRect { int x, y, w, h; };
-        std::vector<DirtyRect> dirty_rects;
-        int total_dirty_pixels = 0;   // Sum of all dirty rect areas
     };
 
     ScreenCapture() = default;
@@ -91,16 +87,6 @@ public:
             if (capture_dxgi_raw(raw)) return true;
         }
         return capture_gdi_raw(raw);
-    }
-
-    // Extended: returns 1=got frame, 0=no change (DXGI timeout, not an error), -1=error
-    int capture_raw_ex(RawFrame& raw) {
-        if (!initialized_) return -1;
-        maybe_retry_dxgi();
-        if (!use_gdi_) {
-            return capture_dxgi_raw_ex(raw);
-        }
-        return capture_gdi_raw(raw) ? 1 : -1;
     }
 
     // Step 2: Encode raw pixels to JPEG (thread-safe, can run on any thread)
@@ -196,40 +182,16 @@ private:
 
     // ── Raw capture (for pipeline) ──
 
-    // Return: 1=got frame, 0=no change (timeout), -1=error
-    int capture_dxgi_raw_ex(RawFrame& raw) {
-        if (!duplication_) return -1;
+    bool capture_dxgi_raw(RawFrame& raw) {
+        if (!duplication_) return false;
         DXGI_OUTDUPL_FRAME_INFO fi{};
         ComPtr<IDXGIResource> res;
-        HRESULT hr = duplication_->AcquireNextFrame(16, &fi, &res);
-        if (hr == DXGI_ERROR_WAIT_TIMEOUT) return 0;  // No new frame (not an error!)
-        if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_INVALID_CALL) { handle_dxgi_lost(); return -1; }
-        if (FAILED(hr)) { use_gdi_ = true; dxgi_retry_interval_s_ = 5; last_dxgi_retry_ = std::chrono::steady_clock::now(); return -1; }
+        HRESULT hr = duplication_->AcquireNextFrame(50, &fi, &res);
+        if (hr == DXGI_ERROR_WAIT_TIMEOUT) return false;
+        if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_INVALID_CALL) { handle_dxgi_lost(); return false; }
+        if (FAILED(hr)) { use_gdi_ = true; dxgi_retry_interval_s_ = 5; last_dxgi_retry_ = std::chrono::steady_clock::now(); return false; }
 
         struct FrameGuard { IDXGIOutputDuplication* dup; ~FrameGuard() { if (dup) dup->ReleaseFrame(); } } fg{duplication_.Get()};
-
-        // Extract dirty rectangles from DXGI
-        raw.dirty_rects.clear();
-        raw.total_dirty_pixels = 0;
-        if (fi.TotalMetadataBufferSize > 0) {
-            UINT dirty_buf_size = 0;
-            duplication_->GetFrameDirtyRects(0, nullptr, &dirty_buf_size);
-            if (dirty_buf_size > 0) {
-                std::vector<RECT> rects(dirty_buf_size / sizeof(RECT));
-                if (SUCCEEDED(duplication_->GetFrameDirtyRects(dirty_buf_size, rects.data(), &dirty_buf_size))) {
-                    int n = dirty_buf_size / sizeof(RECT);
-                    for (int i = 0; i < n; i++) {
-                        RawFrame::DirtyRect dr;
-                        dr.x = rects[i].left;
-                        dr.y = rects[i].top;
-                        dr.w = rects[i].right - rects[i].left;
-                        dr.h = rects[i].bottom - rects[i].top;
-                        raw.dirty_rects.push_back(dr);
-                        raw.total_dirty_pixels += dr.w * dr.h;
-                    }
-                }
-            }
-        }
 
         ComPtr<ID3D11Texture2D> tex;
         if (FAILED(res.As(&tex))) return false;
@@ -304,11 +266,7 @@ private:
         }
 
         d3dContext_->Unmap(staging_.Get(), 0);
-        return 1;  // Got frame
-    }
-
-    bool capture_dxgi_raw(RawFrame& raw) {
-        return capture_dxgi_raw_ex(raw) == 1;
+        return true;
     }
 
     bool capture_gdi_raw(RawFrame& raw) {

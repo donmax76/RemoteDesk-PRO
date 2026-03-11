@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-client",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8090", "--directory", "D:/Android_Projects/TestApp/RemoteDesktop_P2P/NEW_RDP_Cloud/.claude/worktrees/clever-chaum"],
+      "port": 8090
+    }
+  ]
+}
