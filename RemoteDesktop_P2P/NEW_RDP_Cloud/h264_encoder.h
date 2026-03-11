@@ -248,9 +248,19 @@ private:
         // Low latency
         var.vt = VT_BOOL; var.boolVal = VARIANT_TRUE;
         api->SetValue(&CODECAPI_AVLowLatencyMode, &var);
-        // CBR
-        var.vt = VT_UI4; var.ulVal = eAVEncCommonRateControlMode_CBR;
+        // Rate control: CBR for hardware (fast), VBR for software (CBR causes buffering)
+        var.vt = VT_UI4;
+        if (hw_encoder_) {
+            var.ulVal = eAVEncCommonRateControlMode_CBR;
+        } else {
+            var.ulVal = eAVEncCommonRateControlMode_UnconstrainedVBR;
+        }
         api->SetValue(&CODECAPI_AVEncCommonRateControlMode, &var);
+        // Quality for VBR (0-100, lower = better quality)
+        if (!hw_encoder_) {
+            var.vt = VT_UI4; var.ulVal = 65;
+            api->SetValue(&CODECAPI_AVEncCommonQuality, &var);
+        }
         // GOP: keyframe every 2 seconds
         var.vt = VT_UI4; var.ulVal = fps_ * 2;
         api->SetValue(&CODECAPI_AVEncMPVGOPSize, &var);
