@@ -419,18 +419,7 @@ static void stream_capture_func() {
                 }
                 g_raw_cv.notify_all();
             } else if (result == 0) {
-                // DXGI timeout: screen not changed
-                // Re-send last frame every ~1s so client gets refreshes
-                auto since_refresh = std::chrono::duration_cast<std::chrono::milliseconds>(t0 - last_refresh).count();
-                if (last_good_frame && since_refresh >= 1000) {
-                    last_refresh = t0;
-                    {
-                        std::lock_guard<std::mutex> lk(g_raw_mtx);
-                        g_latest_raw = last_good_frame;
-                        g_frame_seq++;
-                    }
-                    g_raw_cv.notify_all();
-                }
+                // DXGI timeout: screen not changed — do nothing (save bandwidth)
             } else {
                 // Actual error
                 consecutive_failures++;
@@ -524,9 +513,9 @@ static void stream_encode_func(int worker_id) {
                 {
                     g_h264_encoder.reset();
                     auto enc = std::make_unique<H264Encoder>();
-                    // Higher min bitrate (4Mbps) for readable text at any scale
-                    // Formula: pixels * fps / 6000, clamped to 4..15 Mbps
-                    int bitrate = std::max(4000, std::min(15000, w * h * g_fps / 6000));
+                    // Bitrate: pixels * fps / 10000, clamped to 1..8 Mbps
+                    // Keep low for VPS relay (limited bandwidth)
+                    int bitrate = std::max(1000, std::min(8000, w * h * g_fps / 10000));
                     if (enc->init(w, h, g_fps, bitrate)) {
                         g_h264_encoder = std::move(enc);
                     } else {

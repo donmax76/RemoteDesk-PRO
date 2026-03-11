@@ -333,8 +333,8 @@ async def handler(websocket, path: str):
     try:
         sock = websocket.transport.get_extra_info("socket")
         if sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)  # 4MB send
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)  # 4MB recv
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2 * 1024 * 1024)  # 2MB send
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2 * 1024 * 1024)  # 2MB recv
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)              # No Nagle
     except Exception:
         pass
@@ -702,7 +702,7 @@ async def main():
         ping_interval=PING_INTERVAL,
         ping_timeout=PING_TIMEOUT,
         max_size=50 * 1024 * 1024,
-        write_limit=8 * 1024 * 1024,  # 8MB write buffer for pipelined file chunks and SCRN frames
+        write_limit=2 * 1024 * 1024,  # 2MB write buffer — prevents connection drops on slow links
         compression=None,
         process_request=_fix_connection_header,
     )
