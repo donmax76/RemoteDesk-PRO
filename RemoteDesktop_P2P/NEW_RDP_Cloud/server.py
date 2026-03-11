@@ -452,8 +452,12 @@ async def handler(websocket, path: str):
                 conn.bytes_recv += len(raw_msg)
                 if role == "client" and room.host:
                     # Binary from client (FILE upload chunks) → forward to host
-                    # Non-blocking: enqueue for async sending to avoid backpressure
-                    enqueue_file_to_host(room, raw_msg)
+                    # BLOCKING: backpressure is correct for files — rate-limits sender
+                    try:
+                        await room.host.ws.send(raw_msg)
+                        room.host.bytes_sent += len(raw_msg)
+                    except:
+                        log.warning("Failed to forward binary to host")
                 elif role == "host_stream":
                     # host_stream ONLY sends SCRN/SCR2 frames → route to stream clients
                     if len(raw_msg) >= 4 and raw_msg[:4] in (b'SCRN', b'SCR2'):
@@ -469,8 +473,12 @@ async def handler(websocket, path: str):
                         if room._pending_binary_targets:
                             target = room._pending_binary_targets.pop(0)
                         if target and target in room.clients:
-                            # Non-blocking: enqueue FILE for async sending
-                            enqueue_file_to_client(room, target, raw_msg)
+                            # BLOCKING: backpressure ensures no chunks are dropped
+                            try:
+                                await room.clients[target].ws.send(raw_msg)
+                                room.clients[target].bytes_sent += len(raw_msg)
+                            except:
+                                pass
                         else:
                             # Fallback: broadcast to all command clients
                             await broadcast_to_clients(room, raw_msg)
@@ -554,87 +562,6 @@ async def broadcast_to_clients(room: Room, msg):
             dead.append(uid)
     for uid in dead:
         room.clients.pop(uid, None)
-
-def enqueue_file_to_host(room: Room, data: bytes):
-    """Queue FILE binary for async sending to the host. Non-blocking.
-    Prevents upload backpressure from blocking the client handler."""
-    host = room.host
-    if not host:
-        return
-    if not hasattr(host, '_file_queue'):
-        host._file_queue = asyncio.Queue(maxsize=32)
-    try:
-        host._file_queue.put_nowait(data)
-    except asyncio.QueueFull:
-        log.warning(f"File upload queue full for host, dropping oldest chunk")
-        try:
-            host._file_queue.get_nowait()
-            host._file_queue.put_nowait(data)
-        except:
-            pass
-    if not getattr(host, '_file_sender_task', None) or host._file_sender_task.done():
-        host._file_sender_task = asyncio.create_task(_host_file_sender(room, host))
-
-
-async def _host_file_sender(room: Room, host_conn: Connection):
-    """Sends queued file upload chunks to host in FIFO order."""
-    try:
-        while room.host is host_conn:
-            try:
-                data = await asyncio.wait_for(host_conn._file_queue.get(), timeout=30)
-            except asyncio.TimeoutError:
-                break
-            try:
-                await host_conn.ws.send(data)
-                host_conn.bytes_sent += len(data)
-            except Exception:
-                log.warning("File upload send to host failed")
-                break
-    except Exception:
-        pass
-
-
-def enqueue_file_to_client(room: Room, client_uid: str, data: bytes):
-    """Queue FILE binary for async sending to a specific client. Non-blocking.
-    Uses per-client asyncio.Queue to preserve chunk ordering while allowing
-    the host handler to process next messages immediately."""
-    c = room.clients.get(client_uid)
-    if not c:
-        return
-    if not hasattr(c, '_file_queue'):
-        c._file_queue = asyncio.Queue(maxsize=32)  # 32 pending chunks max
-    try:
-        c._file_queue.put_nowait(data)
-    except asyncio.QueueFull:
-        log.warning(f"File queue full for client {client_uid}, dropping oldest chunk")
-        try:
-            c._file_queue.get_nowait()
-            c._file_queue.put_nowait(data)
-        except:
-            pass
-    # Start sender task if not already running
-    if not getattr(c, '_file_sender_task', None) or c._file_sender_task.done():
-        c._file_sender_task = asyncio.create_task(_file_sender(room, client_uid, c))
-
-
-async def _file_sender(room: Room, uid: str, conn: Connection):
-    """Per-client FILE sender: sends queued file chunks in FIFO order.
-    Runs until queue is empty for 30s or client disconnects."""
-    try:
-        while uid in room.clients:
-            try:
-                data = await asyncio.wait_for(conn._file_queue.get(), timeout=30)
-            except asyncio.TimeoutError:
-                break  # No data for 30s, stop sender
-            try:
-                await conn.ws.send(data)
-                conn.bytes_sent += len(data)
-            except Exception:
-                log.warning(f"File send failed for client {uid}")
-                break
-    except Exception:
-        pass
-
 
 def enqueue_scrn_to_stream_clients(room: Room, frame: bytes):
     """Fire-and-forget SCRN frame to all stream clients.
