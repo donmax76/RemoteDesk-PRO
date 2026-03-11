@@ -2779,7 +2779,7 @@ async function downloadSelected() {
       await downloadFromHost(path, flatName, true);
       ok++;
     } catch (e) { fail++; notify('Failed: ' + saveName, 'error'); }
-    if (i < toDownload.length - 1) await new Promise(r => setTimeout(r, 100));
+    if (i < toDownload.length - 1) await new Promise(r => setTimeout(r, 0));
   }
   showCancelBtn(false);
   selectedNames.forEach(function(n) { state.selectedFiles.delete(n); });
@@ -2991,41 +2991,42 @@ async function downloadFromHost(path, filename, silent) {
     notify(`Warning: ${filename} — expected ${formatBytes(totalSize)}, got ${formatBytes(total)}`, 'warn');
   }
 
-  const merged = new Uint8Array(total);
-  let pos = 0;
-  chunks.forEach(c => { merged.set(c, pos); pos += c.length; });
-
-  const blob = new Blob([merged]);
-  const saveViaLink = () => {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = filename; a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-    if (!silent) notify(`Downloaded: ${filename} (${formatBytes(total)})`, 'success');
-  };
+  // Save file — stream chunks directly to disk when possible (avoids Blob allocation pause)
   if (state.downloadDirHandle && typeof state.downloadDirHandle.getFileHandle === 'function') {
     try {
       const handle = await state.downloadDirHandle.getFileHandle(filename, { create: true });
       const w = await handle.createWritable();
-      await w.write(blob);
+      for (const c of chunks) await w.write(c);
       await w.close();
       if (!silent) notify(`Saved to folder "${state.downloadDirHandle.name}": ${filename} (${formatBytes(total)})`, 'success');
     } catch (e) {
       if (!silent) notify('Save to folder failed: ' + (e.message || e) + ' — using download', 'warn');
-      saveViaLink();
+      const blob = new Blob(chunks);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
     }
   } else if (typeof window.showSaveFilePicker === 'function' && window.isSecureContext && !silent) {
     try {
       const handle = await window.showSaveFilePicker({ suggestedName: filename });
       const w = await handle.createWritable();
-      await w.write(blob);
+      for (const c of chunks) await w.write(c);
       await w.close();
       notify('Saved: ' + handle.name + ' (' + formatBytes(total) + ')', 'success');
     } catch (e) {
-      if (e.name !== 'AbortError') saveViaLink();
+      if (e.name !== 'AbortError') {
+        const blob = new Blob(chunks);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+      }
     }
   } else {
-    saveViaLink();
+    const blob = new Blob(chunks);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    if (!silent) notify(`Downloaded: ${filename} (${formatBytes(total)})`, 'success');
   }
 }
 
@@ -3152,7 +3153,7 @@ function showFileContextMenu(e, item) {
           await downloadFromHost(files[i].path, flatName, true);
           ok++;
         } catch(e) {}
-        if (i < files.length - 1) await new Promise(r => setTimeout(r, 100));
+        if (i < files.length - 1) await new Promise(r => setTimeout(r, 0));
       }
       notify(`Downloaded ${ok}/${files.length} files from ${item.name}`, ok === files.length ? 'success' : 'warn');
     });
