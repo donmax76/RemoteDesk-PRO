@@ -327,17 +327,21 @@ static void update_adaptive_quality(int64_t encode_send_ms, size_t frame_bytes) 
 // ===== Multi-threaded stream pipeline =====
 
 // Build SCR2 binary message (new protocol, supports JPEG + H.264)
-// Format: SCR2(4) + codec(1) + flags(1) + width(4) + height(4) + data
-// codec: 0=JPEG, 1=H264   flags: bit0=keyframe
+// Format: SCR2(4) + codec(1) + flags(1) + seq(4) + width(4) + height(4) + data
+// codec: 0=JPEG, 1=H264   flags: bit0=keyframe   seq: monotonic frame counter
+static std::atomic<uint32_t> g_scrn_seq{0};
+
 static std::vector<uint8_t> build_scrn_msg(int width, int height,
     const uint8_t* data, size_t data_size, uint8_t codec, bool keyframe)
 {
     std::vector<uint8_t> msg;
-    msg.reserve(14 + data_size);
+    msg.reserve(18 + data_size);
     const char hdr[4] = {'S','C','R','2'};
     msg.insert(msg.end(), hdr, hdr+4);
     msg.push_back(codec);
     msg.push_back(keyframe ? 1 : 0);
+    uint32_t seq = g_scrn_seq.fetch_add(1);
+    msg.insert(msg.end(), reinterpret_cast<uint8_t*>(&seq), reinterpret_cast<uint8_t*>(&seq)+4);
     uint32_t w = width, h = height;
     msg.insert(msg.end(), reinterpret_cast<uint8_t*>(&w), reinterpret_cast<uint8_t*>(&w)+4);
     msg.insert(msg.end(), reinterpret_cast<uint8_t*>(&h), reinterpret_cast<uint8_t*>(&h)+4);
@@ -492,7 +496,9 @@ static void stream_encode_func(int worker_id) {
                 {
                     g_h264_encoder.reset();
                     auto enc = std::make_unique<H264Encoder>();
-                    int bitrate = std::max(2000, std::min(12000, w * h * g_fps / 8000));
+                    // Higher min bitrate (4Mbps) for readable text at any scale
+                    // Formula: pixels * fps / 6000, clamped to 4..15 Mbps
+                    int bitrate = std::max(4000, std::min(15000, w * h * g_fps / 6000));
                     if (enc->init(w, h, g_fps, bitrate)) {
                         g_h264_encoder = std::move(enc);
                     } else {

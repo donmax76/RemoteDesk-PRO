@@ -2204,14 +2204,23 @@ function parseScrnAndRender(buf) {
   }
 
   if (sig === 'SCR2') {
-    // New multi-codec format: SCR2(4) + codec(1) + flags(1) + width(4) + height(4) + data
-    if (arr.length < 14) return;
+    // New multi-codec format: SCR2(4) + codec(1) + flags(1) + seq(4) + width(4) + height(4) + data
+    if (arr.length < 18) return;
     const codec = arr[4];     // 0=JPEG, 1=H264
     const flags = arr[5];     // bit0 = keyframe
     const dv = new DataView(buf);
-    const w = dv.getUint32(6, true);
-    const h = dv.getUint32(10, true);
-    const frameData = new Uint8Array(buf, 14);
+    const seq = dv.getUint32(6, true);
+    const w = dv.getUint32(10, true);
+    const h = dv.getUint32(14, true);
+    const frameData = new Uint8Array(buf, 18);
+
+    // Drop out-of-order frames (stale frames from relay/multi-connection)
+    if (typeof state._lastFrameSeq === 'undefined') state._lastFrameSeq = 0;
+    if (seq < state._lastFrameSeq && (state._lastFrameSeq - seq) < 1000000) {
+      // Stale frame — skip (but allow wraparound at uint32 boundary)
+      return;
+    }
+    state._lastFrameSeq = seq;
 
     state.frameCount++;
     state.streamBytesThisSecond += buf.byteLength;
@@ -2861,7 +2870,7 @@ async function copySelected() {
 
 async function downloadFromHost(path, filename, silent) {
   const CHUNK = 1048576; // 1MB chunks for max throughput
-  const PIPELINE = 6;    // 6 in-flight requests at once
+  const PIPELINE = 8;    // 8 in-flight requests (2 per host_file connection)
   let offset = 0;
   const chunks = [];
   let bar = document.getElementById('fm-progress');
