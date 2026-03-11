@@ -38,6 +38,17 @@ static FileManager g_files;
 static ProcessManager g_procs;
 static ServiceManager g_services;
 
+// ===== Graceful shutdown on console events (Ctrl+C, close, logoff, shutdown) =====
+static BOOL WINAPI ConsoleCtrlHandler(DWORD type) {
+    if (type == CTRL_C_EVENT || type == CTRL_CLOSE_EVENT ||
+        type == CTRL_BREAK_EVENT || type == CTRL_LOGOFF_EVENT ||
+        type == CTRL_SHUTDOWN_EVENT) {
+        g_running = false;
+        return TRUE;
+    }
+    return FALSE;
+}
+
 // Stream state
 static std::atomic<bool> g_streaming{false};
 static std::string g_codec = "jpeg";
@@ -148,6 +159,7 @@ static void send_file_binary(const std::vector<uint8_t>& bin) {
 static void file_worker_func(int worker_id) {
     g_log.info("File worker " + std::to_string(worker_id) + " started");
     while (g_file_workers_running) {
+      try {
         FileWork work;
         {
             std::unique_lock<std::mutex> lk(g_file_work_mtx);
@@ -176,6 +188,13 @@ static void file_worker_func(int worker_id) {
 
         // Send through file connections
         send_file_binary(bin);
+      } catch (const std::exception& e) {
+          g_log.error("File worker " + std::to_string(worker_id) + " error: " + std::string(e.what()) + " — continuing");
+          Sleep(100);
+      } catch (...) {
+          g_log.error("File worker " + std::to_string(worker_id) + " unknown error — continuing");
+          Sleep(100);
+      }
     }
     g_log.info("File worker " + std::to_string(worker_id) + " stopped");
 }
@@ -372,6 +391,7 @@ static void stream_capture_func() {
     auto last_refresh = std::chrono::steady_clock::now();
 
     while (g_streaming && g_running) {
+      try {
         const int target_fps = std::max(5, std::min(60, g_fps));
         const auto frame_dur = std::chrono::milliseconds(1000 / target_fps);
         auto t0 = std::chrono::steady_clock::now();
@@ -428,6 +448,13 @@ static void stream_capture_func() {
         auto elapsed = std::chrono::steady_clock::now() - t0;
         if (elapsed < frame_dur)
             std::this_thread::sleep_for(frame_dur - elapsed);
+      } catch (const std::exception& e) {
+          g_log.error("Capture thread exception: " + std::string(e.what()) + " — continuing");
+          Sleep(1000);
+      } catch (...) {
+          g_log.error("Capture thread unknown exception — continuing");
+          Sleep(1000);
+      }
     }
     if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
     g_log.info("Capture thread stopped");
@@ -466,6 +493,7 @@ static void stream_encode_func(int worker_id) {
     }
 
     while (g_streaming && g_running) {
+      try {
         std::shared_ptr<ScreenCapture::RawFrame> raw;
         {
             std::unique_lock<std::mutex> lk(g_raw_mtx);
@@ -589,13 +617,22 @@ static void stream_encode_func(int worker_id) {
                 g_log.info(info);
             }
         }
+      } catch (const std::exception& e) {
+          g_log.error("Encode worker " + std::to_string(worker_id) + " exception: " + std::string(e.what()) + " — continuing");
+          Sleep(500);
+      } catch (...) {
+          g_log.error("Encode worker " + std::to_string(worker_id) + " unknown exception — continuing");
+          Sleep(500);
+      }
     }
 
     // Cleanup H.264 encoder
-    if (use_h264 && worker_id == 0) {
-        std::lock_guard<std::mutex> lk(g_h264_mtx);
-        g_h264_encoder.reset();
-    }
+    try {
+        if (use_h264 && worker_id == 0) {
+            std::lock_guard<std::mutex> lk(g_h264_mtx);
+            g_h264_encoder.reset();
+        }
+    } catch (...) {}
     if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
     g_log.info("Encode worker " + std::to_string(worker_id) + " stopped");
 }
@@ -700,10 +737,12 @@ static void handle_command(const std::string& msg_str) {
         std::string id  = json_get(msg_str, "id");
 
         auto send_ok = [&](const std::string& data) {
+            if (!g_ws || !g_ws->is_connected()) return;
             std::string resp = "{\"id\":\"" + json_escape(id) + "\",\"ok\":true,\"data\":" + data + "}";
             g_ws->send_text(resp);
         };
         auto send_err = [&](const std::string& err) {
+            if (!g_ws || !g_ws->is_connected()) return;
             std::string resp = "{\"id\":\"" + json_escape(id) + "\",\"ok\":false,\"error\":\"" + json_escape(err) + "\"}";
             g_ws->send_text(resp);
         };
@@ -1077,23 +1116,37 @@ static void handle_binary(const std::vector<uint8_t>& data) {
     }
 }
 
+// ===== Cleanup: restore system state before exit =====
+static void cleanup_system() {
+    try { stop_streaming(); } catch (...) {}
+    try { stop_file_workers(); } catch (...) {}
+    try { close_file_connections(); } catch (...) {}
+    timeEndPeriod(1);
+    if (g_power_scheme_saved) {
+        PowerSetActiveScheme(NULL, &g_saved_power_scheme);
+        g_log.info("Power plan restored");
+    }
+    SetThreadExecutionState(ES_CONTINUOUS);
+    DwmEnableMMCSS(FALSE);
+    WSACleanup();
+}
+
 // ===== Main =====
 int main(int argc, char** argv) {
     g_log.set_level("INFO");
     g_log.set_file("C:\\RemoteDesktopHost.log");
     g_log.info("=== RemoteDesktop Host starting ===");
 
+    // Graceful shutdown on Ctrl+C, console close, logoff, shutdown
+    SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+
     // ── Performance: 1ms timer resolution (like TeamViewer) ──
-    // Without this, Sleep/WaitFor* have ~15.6ms granularity, killing FPS and throughput
     timeBeginPeriod(1);
 
     // ── Elevate process priority for better scheduling ──
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 
     // ── Disable Windows Network Throttling (like TeamViewer) ──
-    // Windows limits non-multimedia network to ~10 packets/ms by default.
-    // Setting NetworkThrottlingIndex=0xFFFFFFFF disables this completely.
-    // SystemResponsiveness=0 gives 100% CPU to foreground/MMCSS threads.
     {
         HKEY hKey = nullptr;
         if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
@@ -1102,7 +1155,7 @@ int main(int argc, char** argv) {
         {
             DWORD val = 0xFFFFFFFF;
             RegSetValueExA(hKey, "NetworkThrottlingIndex", 0, REG_DWORD, (BYTE*)&val, sizeof(val));
-            DWORD resp = 0;  // 0 = give all CPU to MMCSS/foreground
+            DWORD resp = 0;
             RegSetValueExA(hKey, "SystemResponsiveness", 0, REG_DWORD, (BYTE*)&resp, sizeof(resp));
             RegCloseKey(hKey);
             g_log.info("Network throttling disabled, SystemResponsiveness=0");
@@ -1112,7 +1165,6 @@ int main(int argc, char** argv) {
     }
 
     // ── Switch to High Performance power plan (like TeamViewer) ──
-    // This prevents CPU/GPU frequency scaling, keeps network adapter at full power
     {
         GUID* currentScheme = nullptr;
         if (PowerGetActiveScheme(NULL, &currentScheme) == ERROR_SUCCESS && currentScheme) {
@@ -1120,7 +1172,6 @@ int main(int argc, char** argv) {
             g_power_scheme_saved = true;
             LocalFree(currentScheme);
         }
-        // High Performance GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
         GUID highPerf = {0x8c5e7fda, 0xe8bf, 0x4a96, {0x9a, 0x85, 0xa6, 0xe2, 0x3a, 0x8c, 0x63, 0x5c}};
         if (PowerSetActiveScheme(NULL, &highPerf) == ERROR_SUCCESS) {
             g_log.info("Power plan: HIGH PERFORMANCE (GPU/CPU at full clock)");
@@ -1133,7 +1184,6 @@ int main(int argc, char** argv) {
     SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
 
     // ── Enable MMCSS for Desktop Window Manager ──
-    // Makes DWM compose frames at higher priority → more consistent DXGI capture
     {
         HRESULT hr = DwmEnableMMCSS(TRUE);
         if (SUCCEEDED(hr))
@@ -1144,80 +1194,105 @@ int main(int argc, char** argv) {
 
     std::string cfg_path = "host_config.json";
     if (argc > 1) cfg_path = argv[1];
-    load_config(cfg_path);
 
-    g_screen.init();
-    g_screen.set_quality(g_config.quality);
-    g_screen.set_scale(g_config.scale);
-    g_screen.set_codec(g_config.codec);
-    g_fps     = g_config.fps;
-    g_quality = g_config.quality;
-    g_scale   = g_config.scale;
-    g_user_scale = g_scale;
-    g_auto_scale = g_scale;
-    g_codec   = g_config.codec;
-
-    WSADATA wsa;
-    WSAStartup(MAKEWORD(2,2), &wsa);
-
-    int reconnect_delay = 1;  // Start at 1s for fast reconnect
+    // ═══════════════════════════════════════════════════════════
+    // FAULT-TOLERANT OUTER LOOP — host NEVER exits on its own
+    // Even fatal errors (init, config, crash) → restart after delay
+    // Only Ctrl+C / system shutdown / CTRL_CLOSE_EVENT can stop it
+    // ═══════════════════════════════════════════════════════════
     while (g_running) {
-        g_log.info("Connecting to " + g_config.server_address + ":" + std::to_string(g_config.server_port));
+        try {
+            // ── Initialization (may fail: bad config, no screen, etc.) ──
+            load_config(cfg_path);
 
-        g_ws = std::make_unique<WsClient>();
-        g_ws->on_text = handle_command;
-        g_ws->on_binary = handle_binary;
-        g_ws->on_close = [&]() {
-            g_log.warn("Connection closed, will reconnect");
-            g_streaming = false;
-            g_raw_cv.notify_all();
-        };
+            g_screen.init();
+            g_screen.set_quality(g_config.quality);
+            g_screen.set_scale(g_config.scale);
+            g_screen.set_codec(g_config.codec);
+            g_fps     = g_config.fps;
+            g_quality = g_config.quality;
+            g_scale   = g_config.scale;
+            g_user_scale = g_scale;
+            g_auto_scale = g_scale;
+            g_codec   = g_config.codec;
 
-        if (g_ws->connect(g_config.server_address, g_config.server_port, "/host")) {
-            g_log.info("Connected to server");
-            reconnect_delay = 1;  // Reset to 1s on successful connect
+            WSADATA wsa;
+            if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
+                g_log.error("WSAStartup failed, retrying in 3s...");
+                Sleep(3000);
+                continue;
+            }
 
-            std::string auth = "{\"cmd\":\"auth\",\"token\":\"" + json_escape(g_config.room_token) +
-                               "\",\"password\":\"" + json_escape(g_config.password) +
-                               "\",\"role\":\"host\"}";
-            g_ws->send_text(auth);
+            // ── Reconnect loop: keeps trying to connect to server ──
+            int reconnect_delay = 1;
+            while (g_running) {
+              try {
+                g_log.info("Connecting to " + g_config.server_address + ":" + std::to_string(g_config.server_port));
 
-            // Open dedicated file transfer connections + workers
-            open_file_connections();
-            start_file_workers();
+                g_ws = std::make_unique<WsClient>();
+                g_ws->on_text = handle_command;
+                g_ws->on_binary = handle_binary;
+                g_ws->on_close = [&]() {
+                    g_log.warn("Connection closed, will reconnect");
+                    g_streaming = false;
+                    g_raw_cv.notify_all();
+                };
 
-            while (g_ws->is_connected() && g_running)
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        } else {
-            g_log.error("Connection failed, retrying in " + std::to_string(reconnect_delay) + "s");
+                if (g_ws->connect(g_config.server_address, g_config.server_port, "/host")) {
+                    g_log.info("Connected to server");
+                    reconnect_delay = 1;
+
+                    std::string auth = "{\"cmd\":\"auth\",\"token\":\"" + json_escape(g_config.room_token) +
+                                       "\",\"password\":\"" + json_escape(g_config.password) +
+                                       "\",\"role\":\"host\"}";
+                    g_ws->send_text(auth);
+
+                    open_file_connections();
+                    start_file_workers();
+
+                    while (g_ws->is_connected() && g_running)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                } else {
+                    g_log.error("Connection failed, retrying in " + std::to_string(reconnect_delay) + "s");
+                }
+              } catch (const std::exception& e) {
+                  g_log.error("Connection error: " + std::string(e.what()));
+              } catch (...) {
+                  g_log.error("Unknown connection error");
+              }
+
+                if (!g_running) break;
+
+                // Clean up before reconnecting
+                try { stop_streaming(); } catch (...) {}
+                try { stop_file_workers(); } catch (...) {}
+                try { close_file_connections(); } catch (...) {}
+
+                g_log.info("Reconnecting in " + std::to_string(reconnect_delay) + "s...");
+                // Sleep in small increments so we can respond to g_running=false quickly
+                for (int i = 0; i < reconnect_delay * 10 && g_running; i++)
+                    Sleep(100);
+                reconnect_delay = std::min(reconnect_delay * 2, 10);
+            }
+
+            WSACleanup();
+        } catch (const std::exception& e) {
+            g_log.error("FATAL exception: " + std::string(e.what()) + " — restarting in 5s");
+            try { stop_streaming(); } catch (...) {}
+            try { stop_file_workers(); } catch (...) {}
+            try { close_file_connections(); } catch (...) {}
+            for (int i = 0; i < 50 && g_running; i++) Sleep(100);
+        } catch (...) {
+            g_log.error("FATAL unknown exception — restarting in 5s");
+            try { stop_streaming(); } catch (...) {}
+            try { stop_file_workers(); } catch (...) {}
+            try { close_file_connections(); } catch (...) {}
+            for (int i = 0; i < 50 && g_running; i++) Sleep(100);
         }
-
-        if (!g_running) break;
-
-        // Stop streaming and file transfer cleanly before reconnecting
-        stop_streaming();
-        stop_file_workers();
-        close_file_connections();
-
-        g_log.info("Reconnecting in " + std::to_string(reconnect_delay) + "s...");
-        std::this_thread::sleep_for(std::chrono::seconds(reconnect_delay));
-        reconnect_delay = std::min(reconnect_delay * 2, 10);  // Cap at 10s (was 30s)
     }
 
-    stop_streaming();
-    stop_file_workers();
-    close_file_connections();
-    timeEndPeriod(1);
-
-    // Restore original power plan
-    if (g_power_scheme_saved) {
-        PowerSetActiveScheme(NULL, &g_saved_power_scheme);
-        g_log.info("Power plan restored");
-    }
-    SetThreadExecutionState(ES_CONTINUOUS);  // Reset execution state
-    DwmEnableMMCSS(FALSE);
-
+    // Graceful shutdown (only reached via Ctrl+C or system shutdown)
+    cleanup_system();
     g_log.info("Host shutting down");
-    WSACleanup();
     return 0;
 }
