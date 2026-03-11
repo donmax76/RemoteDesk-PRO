@@ -132,37 +132,26 @@ static void close_file_connections() {
     g_file_ws.clear();
 }
 
-// Send route hint + FILE binary atomically through same file connection
-// Each file connection has its own routing state on the server (per-connection _file_target)
-static void send_file_routed(const std::string& target, const std::vector<uint8_t>& bin) {
-    if (g_file_ws_ready && !target.empty()) {
+// Send FILE binary through dedicated file connections (no route hints — server broadcasts to file_recv)
+static void send_file_binary(const std::vector<uint8_t>& bin) {
+    if (g_file_ws_ready) {
         int idx = g_file_ws_robin.fetch_add(1) % (int)g_file_ws.size();
         std::lock_guard<std::mutex> lk(g_file_ws_mtx);
         if (idx < (int)g_file_ws.size() && g_file_ws[idx] && g_file_ws[idx]->is_connected()) {
-            // Route hint + binary through SAME connection (server uses per-connection target)
-            std::string route = "{\"_route_binary_to\":\"" + target + "\"}";
-            g_file_ws[idx]->send_text(route);
             g_file_ws[idx]->send_binary_priority(bin);
             return;
         }
         // Try any connected file ws
         for (auto& ws : g_file_ws) {
             if (ws && ws->is_connected()) {
-                std::string route = "{\"_route_binary_to\":\"" + target + "\"}";
-                ws->send_text(route);
                 ws->send_binary_priority(bin);
                 return;
             }
         }
     }
-    // Fallback to main connection with route hint
-    if (g_ws && g_ws->is_connected()) {
-        if (!target.empty()) {
-            std::string route = "{\"_route_binary_to\":\"" + target + "\"}";
-            g_ws->send_text(route);
-        }
+    // Fallback: main ws (no route hints needed)
+    if (g_ws && g_ws->is_connected())
         g_ws->send_binary_priority(bin);
-    }
 }
 
 // File worker thread: reads chunks from disk and sends via file connections
@@ -196,8 +185,8 @@ static void file_worker_func(int worker_id) {
         bin.insert(bin.end(), reinterpret_cast<const uint8_t*>(&work.offset), reinterpret_cast<const uint8_t*>(&work.offset)+8);
         bin.insert(bin.end(), chunk.begin(), chunk.end());
 
-        // Send route hint + binary through same file connection
-        send_file_routed(work.from, bin);
+        // Send through dedicated file connections (no route hints — server broadcasts to file_recv)
+        send_file_binary(bin);
       } catch (const std::exception& e) {
           g_log.error("File worker " + std::to_string(worker_id) + " error: " + std::string(e.what()) + " — continuing");
           Sleep(100);
@@ -857,31 +846,28 @@ static void handle_command(const std::string& msg_str) {
             std::string path   = json_get(msg_str, "path");
             std::string off_s  = json_get(msg_str, "offset");
             std::string len_s  = json_get(msg_str, "length");
-            std::string from   = json_get(msg_str, "_from");
             uint64_t offset = off_s.empty() ? 0 : std::stoull(off_s);
             uint32_t length = len_s.empty() ? 524288 : std::stoul(len_s);
             if (length > 4 * 1024 * 1024) length = 4 * 1024 * 1024; // Max 4MB per chunk
 
-            // Inline processing: read chunk from disk and send through main ws
-            // (file worker pool was slower — parallel sends through 4 connections
-            //  caused contention on client ws and overwhelmed VPS buffers)
-            std::vector<uint8_t> chunk = g_files.read_file_chunk(path, offset, length);
-            std::vector<uint8_t> bin;
-            bin.reserve(16 + path.size() + chunk.size());
-            const char hdr[4] = {'F','I','L','E'};
-            bin.insert(bin.end(), hdr, hdr+4);
-            uint16_t plen = static_cast<uint16_t>(path.size());
-            bin.insert(bin.end(), reinterpret_cast<uint8_t*>(&plen), reinterpret_cast<uint8_t*>(&plen)+2);
-            bin.insert(bin.end(), path.begin(), path.end());
-            bin.insert(bin.end(), reinterpret_cast<const uint8_t*>(&offset), reinterpret_cast<const uint8_t*>(&offset)+8);
-            bin.insert(bin.end(), chunk.begin(), chunk.end());
-            // Send through main ws with route hint for proper client targeting
-            if (g_ws && g_ws->is_connected()) {
-                if (!from.empty()) {
-                    std::string route = "{\"_route_binary_to\":\"" + from + "\"}";
-                    g_ws->send_text(route);
-                }
-                g_ws->send_binary_priority(bin);
+            if (g_file_workers_running) {
+                // Dispatch to file worker pool → sends through dedicated file connections
+                std::lock_guard<std::mutex> lk(g_file_work_mtx);
+                g_file_work_q.push(FileWork{path, offset, length, ""});
+                g_file_work_cv.notify_one();
+            } else {
+                // Inline fallback: read chunk from disk and send through file or main ws
+                std::vector<uint8_t> chunk = g_files.read_file_chunk(path, offset, length);
+                std::vector<uint8_t> bin;
+                bin.reserve(16 + path.size() + chunk.size());
+                const char hdr[4] = {'F','I','L','E'};
+                bin.insert(bin.end(), hdr, hdr+4);
+                uint16_t plen = static_cast<uint16_t>(path.size());
+                bin.insert(bin.end(), reinterpret_cast<uint8_t*>(&plen), reinterpret_cast<uint8_t*>(&plen)+2);
+                bin.insert(bin.end(), path.begin(), path.end());
+                bin.insert(bin.end(), reinterpret_cast<const uint8_t*>(&offset), reinterpret_cast<const uint8_t*>(&offset)+8);
+                bin.insert(bin.end(), chunk.begin(), chunk.end());
+                send_file_binary(bin);
             }
         }
         else if (cmd == "file_write_chunk") {
@@ -1248,9 +1234,10 @@ int main(int argc, char** argv) {
                                        "\",\"role\":\"host\"}";
                     g_ws->send_text(auth);
 
-                    // File transfers are handled inline through main ws
-                    // (no separate file connections — reduces VPS connection count
-                    //  and avoids parallel send contention on client ws)
+                    // Open dedicated file connections (4× host_file) + worker threads
+                    // FILE data goes through separate TCP paths → no competition with stream
+                    open_file_connections();
+                    start_file_workers();
 
                     while (g_ws->is_connected() && g_running)
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -1267,6 +1254,8 @@ int main(int argc, char** argv) {
 
                 // Clean up before reconnecting
                 try { stop_streaming(); } catch (...) {}
+                try { stop_file_workers(); } catch (...) {}
+                try { close_file_connections(); } catch (...) {}
 
                 g_log.info("Reconnecting in " + std::to_string(reconnect_delay) + "s...");
                 // Sleep in small increments so we can respond to g_running=false quickly
@@ -1279,10 +1268,14 @@ int main(int argc, char** argv) {
         } catch (const std::exception& e) {
             g_log.error("FATAL exception: " + std::string(e.what()) + " — restarting in 5s");
             try { stop_streaming(); } catch (...) {}
+            try { stop_file_workers(); } catch (...) {}
+            try { close_file_connections(); } catch (...) {}
             for (int i = 0; i < 50 && g_running; i++) Sleep(100);
         } catch (...) {
             g_log.error("FATAL unknown exception — restarting in 5s");
             try { stop_streaming(); } catch (...) {}
+            try { stop_file_workers(); } catch (...) {}
+            try { close_file_connections(); } catch (...) {}
             for (int i = 0; i < 50 && g_running; i++) Sleep(100);
         }
     }

@@ -258,6 +258,7 @@ class Room:
     clients: Dict[str, Connection] = field(default_factory=dict)
     stream_clients: Dict[str, Connection] = field(default_factory=dict)  # SCRN-only connections (client→receive)
     host_streams: Dict[str, Connection] = field(default_factory=dict)  # Host stream senders (host→send SCRN)
+    file_clients: Dict[str, Connection] = field(default_factory=dict)  # file_recv connections (dedicated file channel)
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     frame_count: int = 0
@@ -368,7 +369,7 @@ async def handler(websocket, path: str):
             await websocket.send(make_error("Missing token"))
             return
         
-        if role not in ("host", "client", "stream", "host_stream", "host_file"):
+        if role not in ("host", "client", "stream", "host_stream", "host_file", "file_recv"):
             await websocket.send(make_error("Invalid role"))
             return
         
@@ -379,7 +380,7 @@ async def handler(websocket, path: str):
             return
         
         # Password check for clients and stream connections
-        if role in ("client", "stream"):
+        if role in ("client", "stream", "file_recv"):
             if not check_password(password, room.password_hash):
                 await websocket.send(make_error("Wrong password"))
                 log.warning(f"Auth failed from {remote} (wrong password)")
@@ -421,6 +422,8 @@ async def handler(websocket, path: str):
                 room.host_streams[user_id] = conn  # Reuse host_streams dict for host_file
             elif role == "stream":
                 room.stream_clients[user_id] = conn
+            elif role == "file_recv":
+                room.file_clients[user_id] = conn
             else:
                 room.clients[user_id] = conn
             room.touch()
@@ -465,17 +468,13 @@ async def handler(websocket, path: str):
                     if len(raw_msg) >= 4 and raw_msg[:4] in (b'SCRN', b'SCR2'):
                         enqueue_scrn_to_stream_clients(room, raw_msg)
                 elif role == "host_file":
-                    # host_file sends FILE chunks → route to client via per-connection target
-                    target = getattr(conn, '_file_target', "")
-                    conn._file_target = ""  # consume
-                    if target and target in room.clients:
+                    # host_file sends FILE chunks → broadcast to all file_recv clients (dedicated file channel)
+                    for uid, fc in list(room.file_clients.items()):
                         try:
-                            await room.clients[target].ws.send(raw_msg)
-                            room.clients[target].bytes_sent += len(raw_msg)
+                            await fc.ws.send(raw_msg)
+                            fc.bytes_sent += len(raw_msg)
                         except:
-                            pass
-                    else:
-                        await broadcast_to_clients(room, raw_msg)
+                            room.file_clients.pop(uid, None)
                 elif role == "host":
                     if len(raw_msg) >= 4 and raw_msg[:4] in (b'SCRN', b'SCR2'):
                         # SCRN frames → ONLY to stream_clients, NOT to command clients
@@ -500,17 +499,8 @@ async def handler(websocket, path: str):
             else:
                 # Text JSON: route by role
                 conn.bytes_recv += len(raw_msg.encode())
-                if role in ("stream", "host_stream", "host_file"):
-                    # host_file text = routing hints
-                    if role == "host_file":
-                        try:
-                            m = json.loads(raw_msg)
-                            rt = m.get("_route_binary_to", "")
-                            if rt:
-                                conn._file_target = rt
-                        except:
-                            pass
-                    continue  # stream/host_stream/host_file: no text forwarding
+                if role in ("stream", "host_stream", "host_file", "file_recv"):
+                    continue  # No text forwarding for stream/file channels
                 try:
                     msg = json.loads(raw_msg)
                 except:
@@ -563,6 +553,8 @@ async def handler(websocket, path: str):
                     room.clients.pop(conn.user_id, None)
                 elif conn.role == "stream":
                     room.stream_clients.pop(conn.user_id, None)
+                elif conn.role == "file_recv":
+                    room.file_clients.pop(conn.user_id, None)
             
             if conn.role == "host":
                 await broadcast_to_clients(room, make_event("host_offline", {}))
