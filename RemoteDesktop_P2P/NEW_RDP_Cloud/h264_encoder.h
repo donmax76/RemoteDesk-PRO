@@ -78,8 +78,7 @@ public:
 
         encoder_->GetOutputStreamInfo(0, &output_info_);
 
-        // Pre-allocate input buffer
-        MFCreateMemoryBuffer(width_ * height_ * 4, &input_buf_);
+        // (input buffers allocated per-frame in encode() to avoid MFT holding stale refs)
 
         initialized_ = true;
         frame_index_ = 0;
@@ -97,35 +96,59 @@ public:
 
         if (request_keyframe) force_keyframe();
 
-        // Fill input sample
+        // Create a NEW buffer for each frame (MFT may hold reference to previous)
+        ComPtr<IMFMediaBuffer> frame_buf;
+        UINT32 buf_size = use_nv12_ ? (width_ * height_ * 3 / 2) : (width_ * height_ * 4);
+        MFCreateMemoryBuffer(buf_size, &frame_buf);
+
         BYTE* buf_ptr = nullptr;
-        HRESULT hr = input_buf_->Lock(&buf_ptr, nullptr, nullptr);
+        HRESULT hr = frame_buf->Lock(&buf_ptr, nullptr, nullptr);
         if (FAILED(hr)) return result;
 
         if (use_nv12_) {
             bgra_to_nv12(bgra, stride, buf_ptr, width_, height_);
-            input_buf_->SetCurrentLength(width_ * height_ * 3 / 2);
+            frame_buf->SetCurrentLength(width_ * height_ * 3 / 2);
         } else {
             int dst_stride = width_ * 4;
             for (int y = 0; y < height_; y++)
                 memcpy(buf_ptr + y * dst_stride, bgra + y * stride, dst_stride);
-            input_buf_->SetCurrentLength(dst_stride * height_);
+            frame_buf->SetCurrentLength(dst_stride * height_);
         }
-        input_buf_->Unlock();
+        frame_buf->Unlock();
 
         ComPtr<IMFSample> sample;
         MFCreateSample(&sample);
-        sample->AddBuffer(input_buf_.Get());
+        sample->AddBuffer(frame_buf.Get());
         LONGLONG ts = (LONGLONG)frame_index_ * 10000000LL / fps_;
         sample->SetSampleTime(ts);
         sample->SetSampleDuration(10000000LL / fps_);
         frame_index_++;
 
+        // Try to drain output FIRST (software MFT may have buffered frames)
+        result = drain_output();
+
+        // Feed new input — if MFT is full, drain again and retry
         hr = encoder_->ProcessInput(0, sample.Get(), 0);
+        if (hr == MF_E_NOTACCEPTING) {
+            // MFT buffer full — drain output first, then retry
+            auto extra = drain_output();
+            if (!extra.data.empty()) {
+                if (result.data.empty()) result = std::move(extra);
+            }
+            hr = encoder_->ProcessInput(0, sample.Get(), 0);
+        }
         if (FAILED(hr)) return result;
 
-        // Drain all available output
-        result = drain_output();
+        // Drain any additional output produced by this input
+        auto post = drain_output();
+        if (!post.data.empty()) {
+            if (result.data.empty()) {
+                result = std::move(post);
+            } else {
+                // Append (rare case: two frames ready)
+                result.data.insert(result.data.end(), post.data.begin(), post.data.end());
+            }
+        }
         return result;
     }
 
