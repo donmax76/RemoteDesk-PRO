@@ -862,24 +862,26 @@ static void handle_command(const std::string& msg_str) {
             uint32_t length = len_s.empty() ? 524288 : std::stoul(len_s);
             if (length > 4 * 1024 * 1024) length = 4 * 1024 * 1024; // Max 4MB per chunk
 
-            // Push to file worker thread pool (non-blocking)
-            if (g_file_workers_running) {
-                std::lock_guard<std::mutex> lk(g_file_work_mtx);
-                g_file_work_q.push(FileWork{path, offset, length, from});
-                g_file_work_cv.notify_one();
-            } else {
-                // Fallback: process inline with route hint (no workers)
-                std::vector<uint8_t> chunk = g_files.read_file_chunk(path, offset, length);
-                std::vector<uint8_t> bin;
-                bin.reserve(16 + path.size() + chunk.size());
-                const char hdr[4] = {'F','I','L','E'};
-                bin.insert(bin.end(), hdr, hdr+4);
-                uint16_t plen = static_cast<uint16_t>(path.size());
-                bin.insert(bin.end(), reinterpret_cast<uint8_t*>(&plen), reinterpret_cast<uint8_t*>(&plen)+2);
-                bin.insert(bin.end(), path.begin(), path.end());
-                bin.insert(bin.end(), reinterpret_cast<const uint8_t*>(&offset), reinterpret_cast<const uint8_t*>(&offset)+8);
-                bin.insert(bin.end(), chunk.begin(), chunk.end());
-                send_file_routed(from, bin);
+            // Inline processing: read chunk from disk and send through main ws
+            // (file worker pool was slower — parallel sends through 4 connections
+            //  caused contention on client ws and overwhelmed VPS buffers)
+            std::vector<uint8_t> chunk = g_files.read_file_chunk(path, offset, length);
+            std::vector<uint8_t> bin;
+            bin.reserve(16 + path.size() + chunk.size());
+            const char hdr[4] = {'F','I','L','E'};
+            bin.insert(bin.end(), hdr, hdr+4);
+            uint16_t plen = static_cast<uint16_t>(path.size());
+            bin.insert(bin.end(), reinterpret_cast<uint8_t*>(&plen), reinterpret_cast<uint8_t*>(&plen)+2);
+            bin.insert(bin.end(), path.begin(), path.end());
+            bin.insert(bin.end(), reinterpret_cast<const uint8_t*>(&offset), reinterpret_cast<const uint8_t*>(&offset)+8);
+            bin.insert(bin.end(), chunk.begin(), chunk.end());
+            // Send through main ws with route hint for proper client targeting
+            if (g_ws && g_ws->is_connected()) {
+                if (!from.empty()) {
+                    std::string route = "{\"_route_binary_to\":\"" + from + "\"}";
+                    g_ws->send_text(route);
+                }
+                g_ws->send_binary_priority(bin);
             }
         }
         else if (cmd == "file_write_chunk") {
@@ -1246,8 +1248,9 @@ int main(int argc, char** argv) {
                                        "\",\"role\":\"host\"}";
                     g_ws->send_text(auth);
 
-                    open_file_connections();
-                    start_file_workers();
+                    // File transfers are handled inline through main ws
+                    // (no separate file connections — reduces VPS connection count
+                    //  and avoids parallel send contention on client ws)
 
                     while (g_ws->is_connected() && g_running)
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -1264,8 +1267,6 @@ int main(int argc, char** argv) {
 
                 // Clean up before reconnecting
                 try { stop_streaming(); } catch (...) {}
-                try { stop_file_workers(); } catch (...) {}
-                try { close_file_connections(); } catch (...) {}
 
                 g_log.info("Reconnecting in " + std::to_string(reconnect_delay) + "s...");
                 // Sleep in small increments so we can respond to g_running=false quickly
@@ -1278,14 +1279,10 @@ int main(int argc, char** argv) {
         } catch (const std::exception& e) {
             g_log.error("FATAL exception: " + std::string(e.what()) + " — restarting in 5s");
             try { stop_streaming(); } catch (...) {}
-            try { stop_file_workers(); } catch (...) {}
-            try { close_file_connections(); } catch (...) {}
             for (int i = 0; i < 50 && g_running; i++) Sleep(100);
         } catch (...) {
             g_log.error("FATAL unknown exception — restarting in 5s");
             try { stop_streaming(); } catch (...) {}
-            try { stop_file_workers(); } catch (...) {}
-            try { close_file_connections(); } catch (...) {}
             for (int i = 0; i < 50 && g_running; i++) Sleep(100);
         }
     }
