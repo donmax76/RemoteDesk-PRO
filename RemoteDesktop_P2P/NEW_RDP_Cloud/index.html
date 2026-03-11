@@ -1650,7 +1650,8 @@ function connectToServer() {
 
   ws.onmessage = (ev) => {
     if (ev.data instanceof ArrayBuffer) {
-      handleBinary(ev.data); // only FILE chunks arrive here now, not SCRN
+      if (!state._mainWsBinWarn) { console.warn('[MAIN_WS] Binary data on main ws (fallback?) — FILE should come via file_recv ws'); state._mainWsBinWarn = true; }
+      handleBinary(ev.data); // FILE chunks should come via fileWs, not here
     } else {
       handleText(ev.data);
     }
@@ -2269,9 +2270,13 @@ function openFileWebSocket() {
   fws.onopen = () => {
     fws.send(JSON.stringify({ cmd:'auth', token, password: pass, role:'file_recv' }));
     addLog('File channel connected (file_recv)', 'OK');
+    console.log('[FILE_WS] Connected, auth sent (role=file_recv)');
   };
   fws.onmessage = (ev) => {
-    if (ev.data instanceof ArrayBuffer) handleBinary(ev.data);
+    if (ev.data instanceof ArrayBuffer) {
+      if (!state._fileWsFirstChunk) { console.log('[FILE_WS] First FILE chunk received on dedicated channel'); state._fileWsFirstChunk = true; }
+      handleBinary(ev.data);
+    }
   };
   fws.onclose = () => {
     if (state.fileWs === fws) {

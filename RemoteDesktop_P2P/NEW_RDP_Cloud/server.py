@@ -468,13 +468,19 @@ async def handler(websocket, path: str):
                     if len(raw_msg) >= 4 and raw_msg[:4] in (b'SCRN', b'SCR2'):
                         enqueue_scrn_to_stream_clients(room, raw_msg)
                 elif role == "host_file":
-                    # host_file sends FILE chunks → broadcast to all file_recv clients (dedicated file channel)
-                    for uid, fc in list(room.file_clients.items()):
-                        try:
-                            await fc.ws.send(raw_msg)
-                            fc.bytes_sent += len(raw_msg)
-                        except:
-                            room.file_clients.pop(uid, None)
+                    # host_file sends FILE chunks → dedicated file_recv clients if available
+                    if room.file_clients:
+                        for uid, fc in list(room.file_clients.items()):
+                            try:
+                                await fc.ws.send(raw_msg)
+                                fc.bytes_sent += len(raw_msg)
+                            except:
+                                room.file_clients.pop(uid, None)
+                    else:
+                        # Fallback: no file_recv connected → send through main command clients
+                        if conn.msg_count <= 2:  # Log only first few to avoid spam
+                            log.warning(f"host_file fallback: no file_recv clients, sending FILE via main clients")
+                        await broadcast_to_clients(room, raw_msg)
                 elif role == "host":
                     if len(raw_msg) >= 4 and raw_msg[:4] in (b'SCRN', b'SCR2'):
                         # SCRN frames → ONLY to stream_clients, NOT to command clients
