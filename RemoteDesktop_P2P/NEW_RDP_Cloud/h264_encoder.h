@@ -229,7 +229,13 @@ private:
         MFSetAttributeSize(mt.Get(), MF_MT_FRAME_SIZE, width_, height_);
         MFSetAttributeRatio(mt.Get(), MF_MT_FRAME_RATE, fps_, 1);
         mt->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Base);
-        mt->SetUINT32(MF_MT_MPEG2_LEVEL, eAVEncH264VLevel3_1);
+        // Auto-select level based on resolution
+        int pixels = width_ * height_;
+        UINT32 level;
+        if      (pixels <= 921600)  level = eAVEncH264VLevel3_1;  // up to 1280x720
+        else if (pixels <= 2073600) level = eAVEncH264VLevel4_1;  // up to 1920x1080
+        else                        level = eAVEncH264VLevel5_1;  // 4K+
+        mt->SetUINT32(MF_MT_MPEG2_LEVEL, level);
         return SUCCEEDED(encoder_->SetOutputType(0, mt.Get(), 0));
     }
 
