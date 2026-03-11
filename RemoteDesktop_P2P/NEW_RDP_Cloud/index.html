@@ -2877,8 +2877,8 @@ async function copySelected() {
 }
 
 async function downloadFromHost(path, filename, silent) {
-  const CHUNK = 2097152; // 2MB chunks for max throughput
-  const PIPELINE = 10;   // 10 in-flight requests — saturate bandwidth
+  const CHUNK = 524288;  // 512KB chunks — avoids TCP slow-start burst
+  const PIPELINE = 4;    // 4 in-flight requests (2MB total) — smooth ramp-up
   let offset = 0;
   const chunks = [];
   let bar = document.getElementById('fm-progress');
