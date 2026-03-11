@@ -2787,7 +2787,7 @@ async function downloadSelected() {
       await downloadFromHost(path, flatName, true);
       ok++;
     } catch (e) { fail++; notify('Failed: ' + saveName, 'error'); }
-    if (i < toDownload.length - 1) await new Promise(r => setTimeout(r, 0));
+    if (i < toDownload.length - 1) await new Promise(r => setTimeout(r, 100));
   }
   showCancelBtn(false);
   selectedNames.forEach(function(n) { state.selectedFiles.delete(n); });
@@ -2877,8 +2877,7 @@ async function copySelected() {
 }
 
 async function downloadFromHost(path, filename, silent) {
-  const CHUNK = 524288;  // 512KB chunks — avoids TCP slow-start burst
-  const PIPELINE = 4;    // 4 in-flight requests (2MB total) — smooth ramp-up
+  const CHUNK = 524288; // 512KB chunks
   let offset = 0;
   const chunks = [];
   let bar = document.getElementById('fm-progress');
@@ -2894,147 +2893,108 @@ async function downloadFromHost(path, filename, silent) {
     }
   } catch {}
 
-  // ── Pipelined download: Promise.race — process whichever chunk arrives first ──
-  state.pendingFileChunkMap = new Map();
-  let nextSendOffset = 0;
-  let receivedBytes = 0;
-  let dlStartTime = Date.now();
+  const MAX_RETRIES = 3;
+  let consecutiveErrors = 0;
 
-  // Fire a single chunk request at a specific offset
-  function fireRequest(off) {
-    return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        state.pendingFileChunkMap.delete(off);
-        reject(new Error('Timeout'));
-      }, 60000);
-      state.pendingFileChunkMap.set(off, {
-        resolve: (data) => { clearTimeout(timeoutId); resolve({ off, data }); },
-        reject: (err) => { clearTimeout(timeoutId); reject(err); }
-      });
-      sendRaw(JSON.stringify({ cmd:'file_read_chunk', path: path, offset: off, length: CHUNK }));
-    });
-  }
+  while (true) {
+    if (_transferCancelled) break;
+    let chunkData = null;
+    let lastErr = null;
 
-  // Fill pipeline with initial requests
-  const inflight = new Map(); // offset → promise
-  for (let i = 0; i < PIPELINE; i++) {
-    if (totalSize > 0 && nextSendOffset >= totalSize) break;
-    inflight.set(nextSendOffset, fireRequest(nextSendOffset));
-    nextSendOffset += CHUNK;
-  }
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        chunkData = await new Promise((resolve, reject) => {
+          state.pendingFileChunkResolve = { resolve, reject };
+          sendRaw(JSON.stringify({ cmd:'file_read_chunk', path: path, offset: offset, length: CHUNK }));
+          const timeoutId = setTimeout(() => {
+            if (state.pendingFileChunkResolve) {
+              state.pendingFileChunkResolve = null;
+              reject(new Error('Timeout'));
+            }
+          }, 60000);
+          const origResolve = state.pendingFileChunkResolve.resolve;
+          state.pendingFileChunkResolve.resolve = (data) => {
+            clearTimeout(timeoutId);
+            origResolve(data);
+          };
+        });
+        break;
+      } catch (e) {
+        lastErr = e;
+        if (attempt < MAX_RETRIES - 1) {
+          await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+        }
+      }
+    }
 
-  // Process whichever completes first (Promise.race), keep pipeline full
-  const chunkMap = new Map(); // offset → Uint8Array
-  let gotEof = false;
-
-  while (inflight.size > 0 && !gotEof) {
-    if (_transferCancelled) {
-      state.pendingFileChunkMap = new Map();
+    if (!chunkData || chunkData.byteLength === 0) {
+      if (totalSize > 0 && offset < totalSize && consecutiveErrors < 2) {
+        consecutiveErrors++;
+        continue;
+      }
       break;
     }
 
-    // Race all in-flight promises — process whoever finishes first
-    let result;
-    try {
-      result = await Promise.race(
-        Array.from(inflight.entries()).map(([off, p]) =>
-          p.catch(e => ({ off, data: null, error: e }))
-        )
-      );
-    } catch (e) { break; }
-
-    const off = result.off;
-    inflight.delete(off);
-
-    if (result.error || !result.data || result.data.byteLength === 0) {
-      // Retry once on error
-      if (result.error && !result._retried) {
-        try {
-          const retry = await fireRequest(off);
-          if (retry.data && retry.data.byteLength > 0) {
-            result = retry;
-          } else { gotEof = true; continue; }
-        } catch (e2) { gotEof = true; continue; }
-      } else { gotEof = true; continue; }
-    }
-
-    chunkMap.set(off, new Uint8Array(result.data));
-    receivedBytes += result.data.byteLength;
-    _transferBytesTotal += result.data.byteLength;
-
-    // Update progress
+    consecutiveErrors = 0;
+    chunks.push(new Uint8Array(chunkData));
+    offset += chunkData.byteLength;
+    _transferBytesTotal += chunkData.byteLength;
     if (totalSize > 0) {
-      const pct = Math.min(100, (receivedBytes / totalSize * 100));
-      bar.style.width = pct.toFixed(1) + '%';
-      const elapsed = (Date.now() - dlStartTime) / 1000;
-      const speed = elapsed > 0 ? receivedBytes / elapsed : 0;
-      const remainBytes = totalSize - receivedBytes;
+      const pct = Math.min(100, (offset/totalSize*100));
+      bar.style.width = pct.toFixed(1)+'%';
+      const elapsed = (Date.now() - _transferStartTime) / 1000;
+      const speed = elapsed > 0 ? _transferBytesTotal / elapsed : 0;
+      const remainBytes = totalSize - offset;
       const fileEta = speed > 0 ? formatETA(remainBytes / speed) : '--:--';
       const status = document.getElementById('fm-status');
       if (status) status.textContent =
-        `⬇ ${filename}: ${formatBytes(receivedBytes)}/${formatBytes(totalSize)} (${pct.toFixed(0)}%) | ${formatSpeed(speed)} | ETA: ${fileEta}`;
+        `⬇ ${filename}: ${formatBytes(offset)}/${formatBytes(totalSize)} (${pct.toFixed(0)}%) | ${formatSpeed(speed)} | ETA: ${fileEta}`;
     }
-
-    if (result.data.byteLength < CHUNK) { gotEof = true; continue; }
-
-    // Fire next request immediately to keep pipeline full
-    if (totalSize <= 0 || nextSendOffset < totalSize) {
-      inflight.set(nextSendOffset, fireRequest(nextSendOffset));
-      nextSendOffset += CHUNK;
-    }
+    if (chunkData.byteLength < CHUNK) break;
   }
 
-  state.pendingFileChunkMap = new Map();
-
-  // Assemble chunks in offset order
-  const sortedOffsets = Array.from(chunkMap.keys()).sort((a, b) => a - b);
-  for (const off of sortedOffsets) {
-    chunks.push(chunkMap.get(off));
-  }
   bar.style.width = '0%';
 
-  // Validate downloaded size
   const total = chunks.reduce((a, c) => a + c.length, 0);
   if (totalSize > 0 && total < totalSize * 0.95) {
     notify(`Warning: ${filename} — expected ${formatBytes(totalSize)}, got ${formatBytes(total)}`, 'warn');
   }
 
-  // Save file — stream chunks directly to disk when possible (avoids Blob allocation pause)
+  const merged = new Uint8Array(total);
+  let pos = 0;
+  chunks.forEach(c => { merged.set(c, pos); pos += c.length; });
+
+  const blob = new Blob([merged]);
+  const saveViaLink = () => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    if (!silent) notify(`Downloaded: ${filename} (${formatBytes(total)})`, 'success');
+  };
   if (state.downloadDirHandle && typeof state.downloadDirHandle.getFileHandle === 'function') {
     try {
       const handle = await state.downloadDirHandle.getFileHandle(filename, { create: true });
       const w = await handle.createWritable();
-      for (const c of chunks) await w.write(c);
+      await w.write(blob);
       await w.close();
       if (!silent) notify(`Saved to folder "${state.downloadDirHandle.name}": ${filename} (${formatBytes(total)})`, 'success');
     } catch (e) {
       if (!silent) notify('Save to folder failed: ' + (e.message || e) + ' — using download', 'warn');
-      const blob = new Blob(chunks);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      saveViaLink();
     }
   } else if (typeof window.showSaveFilePicker === 'function' && window.isSecureContext && !silent) {
     try {
       const handle = await window.showSaveFilePicker({ suggestedName: filename });
       const w = await handle.createWritable();
-      for (const c of chunks) await w.write(c);
+      await w.write(blob);
       await w.close();
       notify('Saved: ' + handle.name + ' (' + formatBytes(total) + ')', 'success');
     } catch (e) {
-      if (e.name !== 'AbortError') {
-        const blob = new Blob(chunks);
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 5000);
-      }
+      if (e.name !== 'AbortError') saveViaLink();
     }
   } else {
-    const blob = new Blob(chunks);
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-    if (!silent) notify(`Downloaded: ${filename} (${formatBytes(total)})`, 'success');
+    saveViaLink();
   }
 }
 
