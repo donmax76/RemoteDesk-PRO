@@ -338,9 +338,8 @@ static void stream_encode_func(int worker_id) {
                 {
                     g_h264_encoder.reset();
                     auto enc = std::make_unique<H264Encoder>();
-                    // Conservative bitrate for relay streaming (host→VPS→client)
-                    // Lower bitrate = smaller frames = less network congestion
-                    int bitrate = std::max(300, std::min(4000, w * h * g_fps / 25000));
+                    // Bitrate: balance quality vs network — too low = MFT throttles output FPS
+                    int bitrate = std::max(1000, std::min(8000, w * h * g_fps / 10000));
                     if (enc->init(w, h, g_fps, bitrate)) {
                         g_h264_encoder = std::move(enc);
                     } else {
@@ -948,63 +947,6 @@ int main(int argc, char** argv) {
             g_log.info("Network throttling disabled, SystemResponsiveness=0");
         } else {
             g_log.warn("Cannot set NetworkThrottlingIndex (need admin?)");
-        }
-    }
-
-    // ── Network + power optimization (ALL in one background script) ──
-    // Runs ALL optimizations in a single background process to avoid blocking startup.
-    // PowerShell + netsh + powercfg — all combined into one cmd /c start /b call.
-    {
-        g_log.info("Launching network optimization script (background)...");
-
-        // Write a temporary .bat that does everything, then run it in background
-        {
-            char tmpPath[MAX_PATH];
-            GetTempPathA(MAX_PATH, tmpPath);
-            std::string batFile = std::string(tmpPath) + "rdp_net_optimize.bat";
-            std::ofstream bat(batFile);
-            if (bat.is_open()) {
-                bat << "@echo off\n";
-                // NIC optimization via PowerShell — MUST be single line (cmd.exe doesn't support multiline quotes)
-                bat << "powershell -NoProfile -ExecutionPolicy Bypass -Command \""
-                       "$EA='SilentlyContinue'; "
-                       "Get-NetAdapter | ForEach-Object { $a=$_.Name; "
-                       "Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Energy Efficient Ethernet' -DisplayValue 'Disabled' -EA $EA; "
-                       "Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Interrupt Moderation' -DisplayValue 'Disabled' -EA $EA; "
-                       "Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Flow Control' -DisplayValue 'Disabled' -EA $EA; "
-                       "Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Green Ethernet' -DisplayValue 'Disabled' -EA $EA; "
-                       "Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Power Saving Mode' -DisplayValue 'Disabled' -EA $EA "
-                       "}\" >nul 2>nul\n";
-                // TCP tuning via netsh
-                bat << "netsh int tcp set heuristics disabled >nul 2>nul\n";
-                bat << "netsh int tcp set global autotuninglevel=normal >nul 2>nul\n";
-                bat << "netsh int tcp set global congestionprovider=ctcp >nul 2>nul\n";
-                bat << "netsh int tcp set global rss=enabled >nul 2>nul\n";
-                bat << "netsh int tcp set global rsc=disabled >nul 2>nul\n";
-                bat << "netsh int tcp set global chimney=disabled >nul 2>nul\n";
-                bat << "netsh int tcp set global ecncapability=disabled >nul 2>nul\n";
-                bat << "netsh int tcp set global timestamps=disabled >nul 2>nul\n";
-                bat << "netsh int tcp set global fastopen=enabled >nul 2>nul\n";
-                // powercfg
-                bat << "powercfg /setacvalueindex SCHEME_CURRENT 19cbb8fa-5279-450e-9fac-8a3d5fedd0c1 12bbebe6-58d6-4636-95bb-3217ef867c1a 0 >nul 2>nul\n";
-                bat << "powercfg /setacvalueindex SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 >nul 2>nul\n";
-                bat << "powercfg /setacvalueindex SCHEME_CURRENT 501a4d13-42af-4429-9fd1-a8218c268e20 ee12f906-d277-404b-b6da-e5fa1a576df5 0 >nul 2>nul\n";
-                bat << "powercfg /setacvalueindex SCHEME_CURRENT 54533251-82be-4824-96c1-47b60b740d00 893dee8e-2bef-41e0-89c6-b55d0929964c 100 >nul 2>nul\n";
-                bat << "powercfg /setactive SCHEME_CURRENT >nul 2>nul\n";
-                bat << "del \"%~f0\" >nul 2>nul\n"; // Self-delete
-                bat.close();
-
-                // Launch in background — does NOT block host startup
-                std::string cmd = "cmd /c start /min /b \"\" \"" + batFile + "\"";
-                system(cmd.c_str());
-                g_log.info("Network optimization script launched (NIC+TCP+powercfg)");
-            } else {
-                g_log.warn("Cannot create optimization script, running inline...");
-                // Fallback: just the most critical netsh commands (fast, no powershell)
-                system("netsh int tcp set heuristics disabled >nul 2>nul");
-                system("netsh int tcp set global rsc=disabled >nul 2>nul");
-                system("netsh int tcp set global congestionprovider=ctcp >nul 2>nul");
-            }
         }
     }
 
