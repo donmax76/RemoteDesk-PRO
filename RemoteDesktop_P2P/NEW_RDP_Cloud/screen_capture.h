@@ -37,6 +37,10 @@ public:
         int src_width = 0, src_height = 0;
         int src_stride = 0;
         int target_width = 0, target_height = 0;
+        // Dirty rectangles from DXGI (changed regions)
+        struct DirtyRect { int x, y, w, h; };
+        std::vector<DirtyRect> dirty_rects;
+        int total_dirty_pixels = 0;   // Sum of all dirty rect areas
     };
 
     ScreenCapture() = default;
@@ -203,6 +207,29 @@ private:
         if (FAILED(hr)) { use_gdi_ = true; dxgi_retry_interval_s_ = 5; last_dxgi_retry_ = std::chrono::steady_clock::now(); return -1; }
 
         struct FrameGuard { IDXGIOutputDuplication* dup; ~FrameGuard() { if (dup) dup->ReleaseFrame(); } } fg{duplication_.Get()};
+
+        // Extract dirty rectangles from DXGI
+        raw.dirty_rects.clear();
+        raw.total_dirty_pixels = 0;
+        if (fi.TotalMetadataBufferSize > 0) {
+            UINT dirty_buf_size = 0;
+            duplication_->GetFrameDirtyRects(0, nullptr, &dirty_buf_size);
+            if (dirty_buf_size > 0) {
+                std::vector<RECT> rects(dirty_buf_size / sizeof(RECT));
+                if (SUCCEEDED(duplication_->GetFrameDirtyRects(dirty_buf_size, rects.data(), &dirty_buf_size))) {
+                    int n = dirty_buf_size / sizeof(RECT);
+                    for (int i = 0; i < n; i++) {
+                        RawFrame::DirtyRect dr;
+                        dr.x = rects[i].left;
+                        dr.y = rects[i].top;
+                        dr.w = rects[i].right - rects[i].left;
+                        dr.h = rects[i].bottom - rects[i].top;
+                        raw.dirty_rects.push_back(dr);
+                        raw.total_dirty_pixels += dr.w * dr.h;
+                    }
+                }
+            }
+        }
 
         ComPtr<ID3D11Texture2D> tex;
         if (FAILED(res.As(&tex))) return false;

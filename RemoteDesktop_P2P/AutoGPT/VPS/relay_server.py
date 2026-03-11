@@ -725,6 +725,30 @@ async def ws_handler(request):
                             
                             # Обновляем время последнего кадра
                             rooms[room]['last_frame_time'] = time.time()
+                        elif role == 'host_file' and len(msg.data) >= 4 and msg.data[:4] == b'FILE':
+                            # КРИТИЧНО: FILE-prefixed binary от host_file — файловые чанки (пайплайн).
+                            # Пересылаем НАПРЯМУЮ на viewer_main_ws (не через frame систему),
+                            # чтобы каждый чанк дошёл без потерь (frame система заменяет данные).
+                            viewer_ws = rooms[room].get('viewer_main_ws')
+                            if viewer_ws and not viewer_ws.closed:
+                                try:
+                                    await viewer_ws.send_bytes(msg.data)
+                                except Exception as e:
+                                    log_debug(f"[{room}] Error forwarding FILE chunk to viewer: {e}")
+                            else:
+                                # Fallback: viewer_screen или viewers
+                                sent = False
+                                for vlist in (rooms[room].get('viewer_screen_connections', []), rooms[room].get('viewers', [])):
+                                    for v in vlist:
+                                        if v and not v.closed:
+                                            try:
+                                                await v.send_bytes(msg.data)
+                                                sent = True
+                                                break
+                                            except Exception:
+                                                pass
+                                    if sent:
+                                        break
                         else:
                             # КРИТИЧНО: Обычный кадр стрима (от host, host_screen)
                             # НЕ обрабатываем кадры от host_file - они для файлов!
@@ -743,9 +767,7 @@ async def ws_handler(request):
                                     rooms[room]['sending'] = True
                                     rooms[room]['frame_sender_task'] = asyncio.create_task(frame_sender(room))
                             elif role == 'host_file':
-                                # КРИТИЧНО: Кадры от host_file — хост использует file-соединение как fallback для стрима
-                                # Обрабатываем как кадр, чтобы стрим работал при отсутствии host_screen
-                                # КРИТИЧНО: Эти кадры должны идти ТОЛЬКО через viewer_screen_connections, НЕ через viewer_file_connections
+                                # Не-FILE бинарные данные от host_file — fallback для стрима
                                 rooms[room]['recv'] += 1
                                 rooms[room]['bytes'] += len(msg.data)
                                 rooms[room]['frame'] = msg.data
@@ -756,14 +778,7 @@ async def ws_handler(request):
                                         sender_task.cancel()
                                     rooms[room]['sending'] = True
                                     rooms[room]['frame_sender_task'] = asyncio.create_task(frame_sender(room))
-                                # КРИТИЧНО: Логируем для диагностики (только периодически)
-                                if not hasattr(rooms[room], '_host_file_frame_count'):
-                                    rooms[room]['_host_file_frame_count'] = 0
-                                rooms[room]['_host_file_frame_count'] += 1
-                                if rooms[room]['_host_file_frame_count'] % 100 == 0:
-                                    log_debug(f"[{room}] Received {rooms[room]['_host_file_frame_count']} frames from host_file (fallback for stream)")
                             else:
-                                # Логируем если кадр пришел не от host/host_screen/host_file (для диагностики)
                                 log_debug(f"[{room}] Frame received from unexpected role: {role}")
                 except KeyError:
                     log(f"[{room}] Room removed during binary handling - closing ws")

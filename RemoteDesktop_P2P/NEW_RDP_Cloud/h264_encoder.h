@@ -228,7 +228,7 @@ private:
         mt->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
         MFSetAttributeSize(mt.Get(), MF_MT_FRAME_SIZE, width_, height_);
         MFSetAttributeRatio(mt.Get(), MF_MT_FRAME_RATE, fps_, 1);
-        mt->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Base);
+        mt->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Main);
         // Auto-select level based on resolution
         int pixels = width_ * height_;
         UINT32 level;
@@ -285,9 +285,9 @@ private:
             var.ulVal = eAVEncCommonRateControlMode_UnconstrainedVBR;
         }
         api->SetValue(&CODECAPI_AVEncCommonRateControlMode, &var);
-        // Quality for VBR (0-100, lower = better quality)
+        // Quality for VBR (0-100, lower = better quality — 30 for sharp text)
         if (!hw_encoder_) {
-            var.vt = VT_UI4; var.ulVal = 65;
+            var.vt = VT_UI4; var.ulVal = 30;
             api->SetValue(&CODECAPI_AVEncCommonQuality, &var);
         }
         // GOP: keyframe every 2 seconds

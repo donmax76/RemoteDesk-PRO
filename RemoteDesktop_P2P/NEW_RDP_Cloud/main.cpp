@@ -68,6 +68,137 @@ static std::atomic<int> g_consecutive_fast{0};   // Frames below target/2 time
 static std::atomic<int64_t> g_bytes_sent_total{0}; // Total bytes sent for throughput calc
 static std::atomic<int64_t> g_throughput_bps{0};   // Measured throughput (bytes/sec)
 
+// ── Multi-connection file transfer ──
+static std::vector<std::unique_ptr<WsClient>> g_file_ws;   // Dedicated file connections
+static std::atomic<int> g_file_ws_robin{0};                 // Round-robin index
+static std::mutex g_file_ws_mtx;
+static std::atomic<bool> g_file_ws_ready{false};
+
+// File transfer thread pool
+struct FileWork {
+    std::string path;
+    uint64_t offset;
+    uint32_t length;
+    std::string from;
+};
+static std::mutex g_file_work_mtx;
+static std::condition_variable g_file_work_cv;
+static std::queue<FileWork> g_file_work_q;
+static std::vector<std::thread> g_file_workers;
+static std::atomic<bool> g_file_workers_running{false};
+
+static void open_file_connections() {
+    std::lock_guard<std::mutex> lk(g_file_ws_mtx);
+    // Close old connections
+    for (auto& ws : g_file_ws) { if (ws) ws->disconnect(); }
+    g_file_ws.clear();
+    g_file_ws_ready = false;
+
+    int n_conns = 4;  // 4 dedicated file connections
+    for (int i = 0; i < n_conns; i++) {
+        auto ws = std::make_unique<WsClient>();
+        if (ws->connect(g_config.server_address, g_config.server_port, "/host")) {
+            std::string auth = "{\"cmd\":\"auth\",\"token\":\"" + json_escape(g_config.room_token) +
+                               "\",\"password\":\"" + json_escape(g_config.password) +
+                               "\",\"role\":\"host_file\"}";
+            ws->send_text(auth);
+            g_file_ws.push_back(std::move(ws));
+            g_log.info("File connection " + std::to_string(i) + " established");
+        } else {
+            g_log.warn("File connection " + std::to_string(i) + " failed");
+        }
+    }
+    if (!g_file_ws.empty()) {
+        g_file_ws_ready = true;
+        g_log.info("File transfer: " + std::to_string(g_file_ws.size()) + " connections ready");
+    }
+}
+
+static void close_file_connections() {
+    std::lock_guard<std::mutex> lk(g_file_ws_mtx);
+    g_file_ws_ready = false;
+    for (auto& ws : g_file_ws) { if (ws) ws->disconnect(); }
+    g_file_ws.clear();
+}
+
+// Send binary through file connections (round-robin), fallback to main
+static void send_file_binary(const std::vector<uint8_t>& bin) {
+    if (g_file_ws_ready) {
+        int idx = g_file_ws_robin.fetch_add(1) % (int)g_file_ws.size();
+        std::lock_guard<std::mutex> lk(g_file_ws_mtx);
+        if (idx < (int)g_file_ws.size() && g_file_ws[idx] && g_file_ws[idx]->is_connected()) {
+            g_file_ws[idx]->send_binary_priority(bin);
+            return;
+        }
+        // Try any connected file ws
+        for (auto& ws : g_file_ws) {
+            if (ws && ws->is_connected()) {
+                ws->send_binary_priority(bin);
+                return;
+            }
+        }
+    }
+    // Fallback to main connection
+    if (g_ws && g_ws->is_connected()) {
+        g_ws->send_binary_priority(bin);
+    }
+}
+
+// File worker thread: reads chunks from disk and sends via file connections
+static void file_worker_func(int worker_id) {
+    g_log.info("File worker " + std::to_string(worker_id) + " started");
+    while (g_file_workers_running) {
+        FileWork work;
+        {
+            std::unique_lock<std::mutex> lk(g_file_work_mtx);
+            g_file_work_cv.wait_for(lk, std::chrono::milliseconds(200), [] {
+                return !g_file_work_q.empty() || !g_file_workers_running;
+            });
+            if (!g_file_workers_running) break;
+            if (g_file_work_q.empty()) continue;
+            work = std::move(g_file_work_q.front());
+            g_file_work_q.pop();
+        }
+
+        // Read chunk from disk
+        std::vector<uint8_t> chunk = g_files.read_file_chunk(work.path, work.offset, work.length);
+
+        // Build FILE binary
+        std::vector<uint8_t> bin;
+        bin.reserve(16 + work.path.size() + chunk.size());
+        const char hdr[4] = {'F','I','L','E'};
+        bin.insert(bin.end(), hdr, hdr+4);
+        uint16_t plen = static_cast<uint16_t>(work.path.size());
+        bin.insert(bin.end(), reinterpret_cast<uint8_t*>(&plen), reinterpret_cast<uint8_t*>(&plen)+2);
+        bin.insert(bin.end(), work.path.begin(), work.path.end());
+        bin.insert(bin.end(), reinterpret_cast<const uint8_t*>(&work.offset), reinterpret_cast<const uint8_t*>(&work.offset)+8);
+        bin.insert(bin.end(), chunk.begin(), chunk.end());
+
+        // Send through file connections
+        send_file_binary(bin);
+    }
+    g_log.info("File worker " + std::to_string(worker_id) + " stopped");
+}
+
+static void start_file_workers() {
+    if (g_file_workers_running) return;
+    g_file_workers_running = true;
+    int n_workers = 4;  // 4 concurrent file read threads
+    for (int i = 0; i < n_workers; i++) {
+        g_file_workers.emplace_back(file_worker_func, i);
+    }
+    g_log.info("File transfer pool: " + std::to_string(n_workers) + " workers started");
+}
+
+static void stop_file_workers() {
+    g_file_workers_running = false;
+    g_file_work_cv.notify_all();
+    for (auto& t : g_file_workers) {
+        if (t.joinable()) t.join();
+    }
+    g_file_workers.clear();
+}
+
 // Recording state
 static std::atomic<bool> g_recording{false};
 static std::ofstream g_rec_file;
@@ -233,6 +364,8 @@ static void stream_capture_func() {
     }
 
     int consecutive_failures = 0;
+    std::shared_ptr<ScreenCapture::RawFrame> last_good_frame; // Cache for static screen refresh
+    auto last_refresh = std::chrono::steady_clock::now();
 
     while (g_streaming && g_running) {
         const int target_fps = std::max(5, std::min(60, g_fps));
@@ -243,8 +376,18 @@ static void stream_capture_func() {
             auto raw = std::make_shared<ScreenCapture::RawFrame>();
             int result = g_screen.capture_raw_ex(*raw);
             if (result == 1 && !raw->pixels.empty()) {
-                // Got new frame
+                // Got new frame — check dirty rect coverage
                 consecutive_failures = 0;
+                int total_pixels = raw->src_width * raw->src_height;
+                int dirty_pixels = raw->total_dirty_pixels;
+                // Skip cursor-only changes (< 0.1% of screen) unless 500ms since last send
+                auto since_last = std::chrono::duration_cast<std::chrono::milliseconds>(t0 - last_refresh).count();
+                if (dirty_pixels > 0 && dirty_pixels < total_pixels / 1000 && since_last < 500) {
+                    // Tiny change (likely cursor blink) — skip to save CPU/bandwidth
+                    continue;
+                }
+                last_good_frame = raw;  // Cache for static screen refresh
+                last_refresh = t0;
                 {
                     std::lock_guard<std::mutex> lk(g_raw_mtx);
                     g_latest_raw = raw;
@@ -252,7 +395,18 @@ static void stream_capture_func() {
                 }
                 g_raw_cv.notify_all();
             } else if (result == 0) {
-                // DXGI timeout: screen not changed — not an error, no backoff
+                // DXGI timeout: screen not changed
+                // Re-send last frame every ~1s so client gets refreshes
+                auto since_refresh = std::chrono::duration_cast<std::chrono::milliseconds>(t0 - last_refresh).count();
+                if (last_good_frame && since_refresh >= 1000) {
+                    last_refresh = t0;
+                    {
+                        std::lock_guard<std::mutex> lk(g_raw_mtx);
+                        g_latest_raw = last_good_frame;
+                        g_frame_seq++;
+                    }
+                    g_raw_cv.notify_all();
+                }
             } else {
                 // Actual error
                 consecutive_failures++;
@@ -338,7 +492,7 @@ static void stream_encode_func(int worker_id) {
                 {
                     g_h264_encoder.reset();
                     auto enc = std::make_unique<H264Encoder>();
-                    int bitrate = std::max(1000, std::min(8000, w * h * g_fps / 10000));
+                    int bitrate = std::max(2000, std::min(12000, w * h * g_fps / 8000));
                     if (enc->init(w, h, g_fps, bitrate)) {
                         g_h264_encoder = std::move(enc);
                     } else {
@@ -661,26 +815,28 @@ static void handle_command(const std::string& msg_str) {
             std::string len_s  = json_get(msg_str, "length");
             std::string from   = json_get(msg_str, "_from");
             uint64_t offset = off_s.empty() ? 0 : std::stoull(off_s);
-            uint32_t length = len_s.empty() ? 524288 : std::stoul(len_s);
+            uint32_t length = len_s.empty() ? 1048576 : std::stoul(len_s);
             if (length > 4 * 1024 * 1024) length = 4 * 1024 * 1024;
 
-            std::vector<uint8_t> chunk = g_files.read_file_chunk(path, offset, length);
-
-            std::vector<uint8_t> bin;
-            bin.reserve(16 + path.size() + chunk.size());
-            const char hdr[4] = {'F','I','L','E'};
-            bin.insert(bin.end(), hdr, hdr+4);
-            uint16_t plen = static_cast<uint16_t>(path.size());
-            bin.insert(bin.end(), reinterpret_cast<uint8_t*>(&plen), reinterpret_cast<uint8_t*>(&plen)+2);
-            bin.insert(bin.end(), path.begin(), path.end());
-            bin.insert(bin.end(), reinterpret_cast<const uint8_t*>(&offset), reinterpret_cast<const uint8_t*>(&offset)+8);
-            bin.insert(bin.end(), chunk.begin(), chunk.end());
-
-            if (!from.empty()) {
-                std::string route = "{\"_route_binary_to\":\"" + json_escape(from) + "\"}";
-                g_ws->send_text(route);
+            // Push to file worker thread pool (non-blocking)
+            if (g_file_workers_running) {
+                std::lock_guard<std::mutex> lk(g_file_work_mtx);
+                g_file_work_q.push(FileWork{path, offset, length, from});
+                g_file_work_cv.notify_one();
+            } else {
+                // Fallback: process inline (no workers)
+                std::vector<uint8_t> chunk = g_files.read_file_chunk(path, offset, length);
+                std::vector<uint8_t> bin;
+                bin.reserve(16 + path.size() + chunk.size());
+                const char hdr[4] = {'F','I','L','E'};
+                bin.insert(bin.end(), hdr, hdr+4);
+                uint16_t plen = static_cast<uint16_t>(path.size());
+                bin.insert(bin.end(), reinterpret_cast<uint8_t*>(&plen), reinterpret_cast<uint8_t*>(&plen)+2);
+                bin.insert(bin.end(), path.begin(), path.end());
+                bin.insert(bin.end(), reinterpret_cast<const uint8_t*>(&offset), reinterpret_cast<const uint8_t*>(&offset)+8);
+                bin.insert(bin.end(), chunk.begin(), chunk.end());
+                send_file_binary(bin);
             }
-            g_ws->send_binary_priority(bin);
         }
         else if (cmd == "file_write_chunk") {
             send_ok("\"ready\"");
@@ -1020,6 +1176,10 @@ int main(int argc, char** argv) {
                                "\",\"role\":\"host\"}";
             g_ws->send_text(auth);
 
+            // Open dedicated file transfer connections + workers
+            open_file_connections();
+            start_file_workers();
+
             while (g_ws->is_connected() && g_running)
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
         } else {
@@ -1028,8 +1188,10 @@ int main(int argc, char** argv) {
 
         if (!g_running) break;
 
-        // Stop streaming pipeline cleanly before reconnecting
+        // Stop streaming and file transfer cleanly before reconnecting
         stop_streaming();
+        stop_file_workers();
+        close_file_connections();
 
         g_log.info("Reconnecting in " + std::to_string(reconnect_delay) + "s...");
         std::this_thread::sleep_for(std::chrono::seconds(reconnect_delay));
@@ -1037,6 +1199,8 @@ int main(int argc, char** argv) {
     }
 
     stop_streaming();
+    stop_file_workers();
+    close_file_connections();
     timeEndPeriod(1);
 
     // Restore original power plan
