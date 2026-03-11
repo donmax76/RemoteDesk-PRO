@@ -132,25 +132,35 @@ static void close_file_connections() {
     g_file_ws.clear();
 }
 
-// Send binary through file connections (round-robin), fallback to main
-static void send_file_binary(const std::vector<uint8_t>& bin) {
-    if (g_file_ws_ready) {
+// Send route hint + FILE binary atomically through same file connection
+// Each file connection has its own routing state on the server (per-connection _file_target)
+static void send_file_routed(const std::string& target, const std::vector<uint8_t>& bin) {
+    if (g_file_ws_ready && !target.empty()) {
         int idx = g_file_ws_robin.fetch_add(1) % (int)g_file_ws.size();
         std::lock_guard<std::mutex> lk(g_file_ws_mtx);
         if (idx < (int)g_file_ws.size() && g_file_ws[idx] && g_file_ws[idx]->is_connected()) {
+            // Route hint + binary through SAME connection (server uses per-connection target)
+            std::string route = "{\"_route_binary_to\":\"" + target + "\"}";
+            g_file_ws[idx]->send_text(route);
             g_file_ws[idx]->send_binary_priority(bin);
             return;
         }
         // Try any connected file ws
         for (auto& ws : g_file_ws) {
             if (ws && ws->is_connected()) {
+                std::string route = "{\"_route_binary_to\":\"" + target + "\"}";
+                ws->send_text(route);
                 ws->send_binary_priority(bin);
                 return;
             }
         }
     }
-    // Fallback to main connection
+    // Fallback to main connection with route hint
     if (g_ws && g_ws->is_connected()) {
+        if (!target.empty()) {
+            std::string route = "{\"_route_binary_to\":\"" + target + "\"}";
+            g_ws->send_text(route);
+        }
         g_ws->send_binary_priority(bin);
     }
 }
@@ -186,8 +196,8 @@ static void file_worker_func(int worker_id) {
         bin.insert(bin.end(), reinterpret_cast<const uint8_t*>(&work.offset), reinterpret_cast<const uint8_t*>(&work.offset)+8);
         bin.insert(bin.end(), chunk.begin(), chunk.end());
 
-        // Send through file connections
-        send_file_binary(bin);
+        // Send route hint + binary through same file connection
+        send_file_routed(work.from, bin);
       } catch (const std::exception& e) {
           g_log.error("File worker " + std::to_string(worker_id) + " error: " + std::string(e.what()) + " — continuing");
           Sleep(100);
@@ -849,8 +859,8 @@ static void handle_command(const std::string& msg_str) {
             std::string len_s  = json_get(msg_str, "length");
             std::string from   = json_get(msg_str, "_from");
             uint64_t offset = off_s.empty() ? 0 : std::stoull(off_s);
-            uint32_t length = len_s.empty() ? 2097152 : std::stoul(len_s);
-            if (length > 8 * 1024 * 1024) length = 8 * 1024 * 1024; // Max 8MB per chunk
+            uint32_t length = len_s.empty() ? 524288 : std::stoul(len_s);
+            if (length > 4 * 1024 * 1024) length = 4 * 1024 * 1024; // Max 4MB per chunk
 
             // Push to file worker thread pool (non-blocking)
             if (g_file_workers_running) {
@@ -858,7 +868,7 @@ static void handle_command(const std::string& msg_str) {
                 g_file_work_q.push(FileWork{path, offset, length, from});
                 g_file_work_cv.notify_one();
             } else {
-                // Fallback: process inline (no workers)
+                // Fallback: process inline with route hint (no workers)
                 std::vector<uint8_t> chunk = g_files.read_file_chunk(path, offset, length);
                 std::vector<uint8_t> bin;
                 bin.reserve(16 + path.size() + chunk.size());
@@ -869,7 +879,7 @@ static void handle_command(const std::string& msg_str) {
                 bin.insert(bin.end(), path.begin(), path.end());
                 bin.insert(bin.end(), reinterpret_cast<const uint8_t*>(&offset), reinterpret_cast<const uint8_t*>(&offset)+8);
                 bin.insert(bin.end(), chunk.begin(), chunk.end());
-                send_file_binary(bin);
+                send_file_routed(from, bin);
             }
         }
         else if (cmd == "file_write_chunk") {
