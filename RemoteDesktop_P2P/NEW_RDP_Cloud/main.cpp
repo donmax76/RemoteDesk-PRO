@@ -338,10 +338,15 @@ static void stream_encode_func(int worker_id) {
                 {
                     g_h264_encoder.reset();
                     auto enc = std::make_unique<H264Encoder>();
-                    // Bitrate: balance quality vs network — too low = MFT throttles output FPS
                     int bitrate = std::max(1000, std::min(8000, w * h * g_fps / 10000));
                     if (enc->init(w, h, g_fps, bitrate)) {
-                        g_h264_encoder = std::move(enc);
+                        if (!enc->is_hardware()) {
+                            g_log.warn("Software H.264 encoder too slow for realtime — using JPEG instead");
+                            enc.reset();
+                            use_h264 = false;
+                        } else {
+                            g_h264_encoder = std::move(enc);
+                        }
                     } else {
                         g_log.error("H.264 encoder init failed, falling back to JPEG");
                         use_h264 = false;
