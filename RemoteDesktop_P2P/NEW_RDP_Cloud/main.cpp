@@ -965,18 +965,16 @@ int main(int argc, char** argv) {
             std::ofstream bat(batFile);
             if (bat.is_open()) {
                 bat << "@echo off\n";
-                // NIC optimization via PowerShell (single process, all commands at once)
-                bat << "powershell -NoProfile -ExecutionPolicy Bypass -Command \"\n";
-                bat << "  $EA = 'SilentlyContinue'\n";
-                bat << "  Get-NetAdapter | ForEach-Object {\n";
-                bat << "    $a = $_.Name\n";
-                bat << "    Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Energy Efficient Ethernet' -DisplayValue 'Disabled' -EA $EA\n";
-                bat << "    Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Interrupt Moderation' -DisplayValue 'Disabled' -EA $EA\n";
-                bat << "    Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Flow Control' -DisplayValue 'Disabled' -EA $EA\n";
-                bat << "    Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Green Ethernet' -DisplayValue 'Disabled' -EA $EA\n";
-                bat << "    Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Power Saving Mode' -DisplayValue 'Disabled' -EA $EA\n";
-                bat << "  }\n";
-                bat << "\" >nul 2>nul\n";
+                // NIC optimization via PowerShell — MUST be single line (cmd.exe doesn't support multiline quotes)
+                bat << "powershell -NoProfile -ExecutionPolicy Bypass -Command \""
+                       "$EA='SilentlyContinue'; "
+                       "Get-NetAdapter | ForEach-Object { $a=$_.Name; "
+                       "Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Energy Efficient Ethernet' -DisplayValue 'Disabled' -EA $EA; "
+                       "Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Interrupt Moderation' -DisplayValue 'Disabled' -EA $EA; "
+                       "Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Flow Control' -DisplayValue 'Disabled' -EA $EA; "
+                       "Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Green Ethernet' -DisplayValue 'Disabled' -EA $EA; "
+                       "Set-NetAdapterAdvancedProperty -Name $a -DisplayName 'Power Saving Mode' -DisplayValue 'Disabled' -EA $EA "
+                       "}\" >nul 2>nul\n";
                 // TCP tuning via netsh
                 bat << "netsh int tcp set heuristics disabled >nul 2>nul\n";
                 bat << "netsh int tcp set global autotuninglevel=normal >nul 2>nul\n";
