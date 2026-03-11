@@ -1669,6 +1669,7 @@ function connectToServer() {
     if (state.streamWs) { try { state.streamWs.close(); } catch(e){} state.streamWs = null; }
     state.streamOverWebRTC = false;
     state.webrtcIceQueue = [];
+    state._lastFrameSeq = undefined;  // Reset seq tracking on disconnect
     setConnStatus('disconnected');
     addLog('Disconnected from server', 'WARN');
     document.getElementById('btn-connect').classList.remove('hidden');
@@ -2216,9 +2217,14 @@ function parseScrnAndRender(buf) {
 
     // Drop out-of-order frames (stale frames from relay/multi-connection)
     if (typeof state._lastFrameSeq === 'undefined') state._lastFrameSeq = 0;
-    if (seq < state._lastFrameSeq && (state._lastFrameSeq - seq) < 1000000) {
-      // Stale frame — skip (but allow wraparound at uint32 boundary)
-      return;
+    if (seq < state._lastFrameSeq) {
+      if ((state._lastFrameSeq - seq) > 10000) {
+        // Large gap backward — likely host restart (seq reset to 0). Accept frame.
+        state._lastFrameSeq = 0;
+      } else {
+        // Small gap — stale/out-of-order frame, skip
+        return;
+      }
     }
     state._lastFrameSeq = seq;
 
@@ -2245,6 +2251,7 @@ async function startStream() {
   if (state.streamWs) { try { state.streamWs.close(); } catch(e){} state.streamWs = null; }
   state.streamOverWebRTC = false;
   state.webrtcIceQueue = [];
+  state._lastFrameSeq = undefined;  // Reset seq tracking for fresh stream session
 
   // Open a dedicated WebSocket just for receiving SCRN binary frames.
   // This keeps the main command WS free from megabytes of frame data,
@@ -2366,6 +2373,7 @@ async function startStream() {
 async function stopStream() {
   state.streaming = false;
   state.streamOverWebRTC = false;
+  state._lastFrameSeq = undefined;  // Reset seq tracking
   if (state.streamDc) { state.streamDc.close(); state.streamDc = null; }
   if (state.streamPc) { state.streamPc.close(); state.streamPc = null; }
   if (state.streamWs) { try { state.streamWs.close(); } catch(e){} state.streamWs = null; }
