@@ -2869,8 +2869,8 @@ async function copySelected() {
 }
 
 async function downloadFromHost(path, filename, silent) {
-  const CHUNK = 1048576; // 1MB chunks for max throughput
-  const PIPELINE = 8;    // 8 in-flight requests (2 per host_file connection)
+  const CHUNK = 2097152; // 2MB chunks for max throughput
+  const PIPELINE = 10;   // 10 in-flight requests — saturate bandwidth
   let offset = 0;
   const chunks = [];
   let bar = document.getElementById('fm-progress');
@@ -2886,7 +2886,7 @@ async function downloadFromHost(path, filename, silent) {
     }
   } catch {}
 
-  // ── Pipelined download: fire PIPELINE requests at once, match by offset ──
+  // ── Pipelined download: Promise.race — process whichever chunk arrives first ──
   state.pendingFileChunkMap = new Map();
   let nextSendOffset = 0;
   let receivedBytes = 0;
@@ -2900,49 +2900,59 @@ async function downloadFromHost(path, filename, silent) {
         reject(new Error('Timeout'));
       }, 60000);
       state.pendingFileChunkMap.set(off, {
-        resolve: (data) => { clearTimeout(timeoutId); resolve(data); },
+        resolve: (data) => { clearTimeout(timeoutId); resolve({ off, data }); },
         reject: (err) => { clearTimeout(timeoutId); reject(err); }
       });
       sendRaw(JSON.stringify({ cmd:'file_read_chunk', path: path, offset: off, length: CHUNK }));
     });
   }
 
-  // Fill the pipeline with initial requests
-  const inflight = [];
+  // Fill pipeline with initial requests
+  const inflight = new Map(); // offset → promise
   for (let i = 0; i < PIPELINE; i++) {
     if (totalSize > 0 && nextSendOffset >= totalSize) break;
-    inflight.push({ offset: nextSendOffset, promise: fireRequest(nextSendOffset) });
+    inflight.set(nextSendOffset, fireRequest(nextSendOffset));
     nextSendOffset += CHUNK;
   }
 
-  // Collect results: process completed promises, fire new ones to keep pipeline full
-  // Results may arrive out-of-order from 4 host_file connections — assemble by offset later
+  // Process whichever completes first (Promise.race), keep pipeline full
   const chunkMap = new Map(); // offset → Uint8Array
+  let gotEof = false;
 
-  while (inflight.length > 0) {
+  while (inflight.size > 0 && !gotEof) {
     if (_transferCancelled) {
       state.pendingFileChunkMap = new Map();
       break;
     }
 
-    const req = inflight.shift();
-    let chunkData = null;
+    // Race all in-flight promises — process whoever finishes first
+    let result;
     try {
-      chunkData = await req.promise;
-    } catch (e) {
-      // Retry once
-      try {
-        chunkData = await fireRequest(req.offset);
-      } catch (e2) {
-        break;
-      }
+      result = await Promise.race(
+        Array.from(inflight.entries()).map(([off, p]) =>
+          p.catch(e => ({ off, data: null, error: e }))
+        )
+      );
+    } catch (e) { break; }
+
+    const off = result.off;
+    inflight.delete(off);
+
+    if (result.error || !result.data || result.data.byteLength === 0) {
+      // Retry once on error
+      if (result.error && !result._retried) {
+        try {
+          const retry = await fireRequest(off);
+          if (retry.data && retry.data.byteLength > 0) {
+            result = retry;
+          } else { gotEof = true; continue; }
+        } catch (e2) { gotEof = true; continue; }
+      } else { gotEof = true; continue; }
     }
 
-    if (!chunkData || chunkData.byteLength === 0) break; // EOF
-
-    chunkMap.set(req.offset, new Uint8Array(chunkData));
-    receivedBytes += chunkData.byteLength;
-    _transferBytesTotal += chunkData.byteLength;
+    chunkMap.set(off, new Uint8Array(result.data));
+    receivedBytes += result.data.byteLength;
+    _transferBytesTotal += result.data.byteLength;
 
     // Update progress
     if (totalSize > 0) {
@@ -2957,11 +2967,11 @@ async function downloadFromHost(path, filename, silent) {
         `⬇ ${filename}: ${formatBytes(receivedBytes)}/${formatBytes(totalSize)} (${pct.toFixed(0)}%) | ${formatSpeed(speed)} | ETA: ${fileEta}`;
     }
 
-    if (chunkData.byteLength < CHUNK) break; // Last chunk
+    if (result.data.byteLength < CHUNK) { gotEof = true; continue; }
 
-    // Fire next request to keep pipeline full
+    // Fire next request immediately to keep pipeline full
     if (totalSize <= 0 || nextSendOffset < totalSize) {
-      inflight.push({ offset: nextSendOffset, promise: fireRequest(nextSendOffset) });
+      inflight.set(nextSendOffset, fireRequest(nextSendOffset));
       nextSendOffset += CHUNK;
     }
   }

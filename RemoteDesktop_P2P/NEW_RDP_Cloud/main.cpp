@@ -821,8 +821,8 @@ static void handle_command(const std::string& msg_str) {
             std::string len_s  = json_get(msg_str, "length");
             std::string from   = json_get(msg_str, "_from");
             uint64_t offset = off_s.empty() ? 0 : std::stoull(off_s);
-            uint32_t length = len_s.empty() ? 1048576 : std::stoul(len_s);
-            if (length > 4 * 1024 * 1024) length = 4 * 1024 * 1024;
+            uint32_t length = len_s.empty() ? 2097152 : std::stoul(len_s);
+            if (length > 8 * 1024 * 1024) length = 8 * 1024 * 1024; // Max 8MB per chunk
 
             // Push to file worker thread pool (non-blocking)
             if (g_file_workers_running) {
