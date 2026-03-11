@@ -1332,8 +1332,9 @@ async def frame_sender(room):
             last_frame_time = time.time()
             no_frame_count = 0
             
-            # Пропускаем очень большие кадры
-            if len(frame) > 500 * 1024:
+            # Пропускаем очень большие кадры (> 4MB — защита от утечки памяти)
+            # ВАЖНО: H.264 keyframes могут быть 500KB-2MB при высоком скале — НЕ дропаем!
+            if len(frame) > 4 * 1024 * 1024:
                 info['frame'] = None
                 skipped += 1
             else:
@@ -1346,11 +1347,10 @@ async def frame_sender(room):
                 current_screen_conns = info.get('viewer_screen_connections', [])
                 active_screen_conns = [v for v in current_screen_conns if v and not v.closed]
                 if active_screen_conns:
-                    # Round-robin по всем screen соединениям — используем несколько TCP-потоков, больше Sent при медленном канале
-                    rr = info.get('_frame_round_robin', 0)
-                    idx = rr % len(active_screen_conns)
-                    info['_frame_round_robin'] = rr + 1
-                    target_viewers = [active_screen_conns[idx]]
+                    # КРИТИЧНО: Используем ПЕРВОЕ screen соединение для ВСЕХ кадров
+                    # Round-robin ломает порядок H.264 кадров (delta зависят от предыдущих)
+                    # WebSocket гарантирует порядок ТОЛЬКО в рамках одного соединения
+                    target_viewers = [active_screen_conns[0]]
                 else:
                     # КРИТИЧНО: НЕ используем viewer_file_connections для кадров - они для файлов!
                     # Используем viewer_main_ws как резерв для обратной совместимости
