@@ -476,9 +476,9 @@ async def handler(websocket, path: str):
                                 fc.bytes_sent += len(raw_msg)
                             except:
                                 room.file_clients.pop(uid, None)
+                        await asyncio.sleep(0)  # Yield — let stream sender run
                     else:
-                        # Fallback: no file_recv connected → send through main command clients
-                        if conn.msg_count <= 2:  # Log only first few to avoid spam
+                        if conn.msg_count <= 2:
                             log.warning(f"host_file fallback: no file_recv clients, sending FILE via main clients")
                         await broadcast_to_clients(room, raw_msg)
                 elif role == "host":
@@ -488,13 +488,15 @@ async def handler(websocket, path: str):
                         enqueue_scrn_to_stream_clients(room, raw_msg)
                     elif len(raw_msg) >= 4 and raw_msg[:4] == b'FILE' and room.file_clients:
                         # FILE binary from host main ws → route to dedicated file_recv clients
-                        # This keeps FILE data off the command ws, preventing UI lag
                         for uid, fc in list(room.file_clients.items()):
                             try:
                                 await fc.ws.send(raw_msg)
                                 fc.bytes_sent += len(raw_msg)
                             except:
                                 room.file_clients.pop(uid, None)
+                        # Yield to event loop — let stream sender interleave frames
+                        # Without this, burst of 4 FILE chunks starves stream
+                        await asyncio.sleep(0)
                     else:
                         # Non-FILE binary or no file_recv clients → route via target queue or broadcast
                         target = ""
@@ -593,29 +595,38 @@ async def broadcast_to_clients(room: Room, msg):
 
 def enqueue_scrn_to_stream_clients(room: Room, frame: bytes):
     """Fire-and-forget SCRN frame to all stream clients.
-    Each client has a single-slot latest frame — old frames are dropped automatically.
-    This NEVER blocks the host handler, preventing backpressure."""
+    Single-slot latest frame — old frames dropped. asyncio.Event for zero-latency wakeup."""
     if not room.stream_clients:
         return
     room.frame_count += 1
     for uid, c in list(room.stream_clients.items()):
-        # Store latest frame for this client; sender task picks it up
         c._latest_frame = frame
         c.bytes_sent += len(frame)
-        # Start sender task if not already running
+        # Wake sender instantly (vs 10ms polling before)
+        ev = getattr(c, '_frame_event', None)
+        if ev:
+            ev.set()
         if not getattr(c, '_sender_task', None) or c._sender_task.done():
+            c._frame_event = asyncio.Event()
+            c._frame_event.set()  # Frame already available
             c._sender_task = asyncio.create_task(_stream_sender(room, uid, c))
 
 
 async def _stream_sender(room: Room, uid: str, conn: Connection):
-    """Per-client sender coroutine: sends the latest SCRN frame, drops stale ones."""
+    """Per-client stream sender: instant wakeup via Event, drops stale frames."""
+    event = getattr(conn, '_frame_event', None) or asyncio.Event()
+    conn._frame_event = event
     try:
         while uid in room.stream_clients:
-            frame = getattr(conn, '_latest_frame', None)
-            if frame is None:
-                await asyncio.sleep(0.01)
+            try:
+                await asyncio.wait_for(event.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
                 continue
-            conn._latest_frame = None  # Consume — if a newer frame arrives, it overwrites
+            event.clear()
+            frame = conn._latest_frame
+            if frame is None:
+                continue
+            conn._latest_frame = None
             try:
                 await conn.ws.send(frame)
             except Exception:
@@ -623,7 +634,6 @@ async def _stream_sender(room: Room, uid: str, conn: Connection):
     except Exception:
         pass
     finally:
-        # Clean up dead client
         if uid in room.stream_clients:
             room.stream_clients.pop(uid, None)
             log.info(f"Stream client {uid} removed (send failed)")

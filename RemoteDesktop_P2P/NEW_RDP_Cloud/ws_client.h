@@ -264,11 +264,16 @@ private:
                 break;
             }
             // Drain all remaining priority messages before waiting again
+            // CRITICAL: release mutex BEFORE send_frame_to_socket (blocking TCP send)
+            // Otherwise workers/keepalive/cmd_loop are blocked for 100s of ms per chunk
             while (sender_running_ && connected_) {
-                std::lock_guard<std::mutex> lk(q_mu_);
-                if (priority_q_.empty()) break;
-                auto m = std::move(priority_q_.front());
-                priority_q_.pop();
+                Outgoing m;
+                {
+                    std::lock_guard<std::mutex> lk(q_mu_);
+                    if (priority_q_.empty()) break;
+                    m = std::move(priority_q_.front());
+                    priority_q_.pop();
+                }
                 if (!send_frame_to_socket(m.opcode, m.data.data(), m.data.size())) {
                     connected_ = false;
                     break;
