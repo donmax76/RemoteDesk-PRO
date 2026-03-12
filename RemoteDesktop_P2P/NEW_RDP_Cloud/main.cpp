@@ -1234,9 +1234,9 @@ int main(int argc, char** argv) {
                                        "\",\"role\":\"host\"}";
                     g_ws->send_text(auth);
 
-                    // Open dedicated file connections (4× host_file) + worker threads
-                    // FILE data goes through separate TCP paths → no competition with stream
-                    open_file_connections();
+                    // Start file worker threads (read chunks in background, send via main ws)
+                    // NOTE: No separate host_file TCP connections — they steal bandwidth from stream!
+                    // FILE binary goes through main ws → server routes to file_recv clients
                     start_file_workers();
 
                     while (g_ws->is_connected() && g_running)

@@ -486,20 +486,27 @@ async def handler(websocket, path: str):
                         # SCRN frames → ONLY to stream_clients, NOT to command clients
                         # Fire-and-forget: never blocks the host handler
                         enqueue_scrn_to_stream_clients(room, raw_msg)
+                    elif len(raw_msg) >= 4 and raw_msg[:4] == b'FILE' and room.file_clients:
+                        # FILE binary from host main ws → route to dedicated file_recv clients
+                        # This keeps FILE data off the command ws, preventing UI lag
+                        for uid, fc in list(room.file_clients.items()):
+                            try:
+                                await fc.ws.send(raw_msg)
+                                fc.bytes_sent += len(raw_msg)
+                            except:
+                                room.file_clients.pop(uid, None)
                     else:
-                        # FILE chunks → route to specific client from target queue
+                        # Non-FILE binary or no file_recv clients → route via target queue or broadcast
                         target = ""
                         if room._pending_binary_targets:
                             target = room._pending_binary_targets.pop(0)
                         if target and target in room.clients:
-                            # BLOCKING: backpressure ensures no chunks are dropped
                             try:
                                 await room.clients[target].ws.send(raw_msg)
                                 room.clients[target].bytes_sent += len(raw_msg)
                             except:
                                 pass
                         else:
-                            # Fallback: broadcast to all command clients
                             await broadcast_to_clients(room, raw_msg)
                 # role == "stream" sends nothing to host
             else:
